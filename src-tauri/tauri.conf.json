@@ -1,0 +1,35 @@
+{
+    "build": {
+        "beforeDevCommand": "npm run dev",
+        "beforeBuildCommand": "npm run build",
+        "devUrl": "http://localhost:5173",
+        "frontendDist": "../dist"
+    },
+    "identifier": "com.turbo.downloader",
+    "app": {
+        "windows": [
+            {
+                "title": "Turbo Video Downloader Ultra",
+                "width": 720,
+                "height": 600,
+                "minWidth": 620,
+                "minHeight": 520,
+                "resizable": true
+            }
+        ],
+        "security": {
+            "csp": null
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": ["deb"],
+        "icon": [
+            "icons/32x32.png",
+            "icons/128x128.png",
+            "icons/128x128@2x.png",
+            "icons/icon.icns",
+            "icons/icon.ico"
+        ]
+    }
+}

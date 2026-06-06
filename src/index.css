@@ -1,0 +1,131 @@
+@import "tailwindcss";
+/* ── Google Fonts are loaded via index.html ── */
+
+:root {
+    --acid: #c8ff00;
+    --acid-dim: #9cbf00;
+    --carbon: #0a0a0a;
+    --carbon-2: #111111;
+    --carbon-3: #1a1a1a;
+    --carbon-4: #242424;
+    --carbon-5: #2e2e2e;
+    --steel: #888888;
+    --steel-dim: #555555;
+}
+
+* {
+    box-sizing: border-box;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+html,
+body,
+#root {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--carbon);
+    color: #e8e8e8;
+    font-family: "DM Sans", sans-serif;
+    user-select: none;
+}
+
+/* ── custom scrollbar (format list) ── */
+::-webkit-scrollbar {
+    width: 4px;
+}
+::-webkit-scrollbar-track {
+    background: var(--carbon-3);
+}
+::-webkit-scrollbar-thumb {
+    background: var(--steel-dim);
+    border-radius: 2px;
+}
+
+/* ── progress bar track ── */
+.progress-track {
+    background: var(--carbon-4);
+    border: 1px solid var(--carbon-5);
+    border-radius: 2px;
+    overflow: hidden;
+    height: 6px;
+    width: 100%;
+}
+.progress-fill {
+    height: 100%;
+    background: var(--acid);
+    border-radius: 2px;
+    transition: width 0.35s ease;
+    box-shadow: 0 0 10px var(--acid);
+}
+
+/* ── acid glow on focus ── */
+.acid-focus:focus {
+    outline: none;
+    box-shadow:
+        0 0 0 1px var(--acid),
+        0 0 14px #c8ff0033;
+}
+
+/* ── scanline overlay ── */
+.scanlines::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+        to bottom,
+        transparent,
+        transparent 2px,
+        rgba(0, 0, 0, 0.07) 2px,
+        rgba(0, 0, 0, 0.07) 4px
+    );
+    pointer-events: none;
+    border-radius: inherit;
+}
+
+/* ── status dot blink ── */
+@keyframes blink {
+    0%,
+    100% {
+        opacity: 1;
+    }
+    50% {
+        opacity: 0.2;
+    }
+}
+.blink {
+    animation: blink 1.4s ease infinite;
+}
+
+/* ── slide-in for the format select row ── */
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-6px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+.slide-in {
+    animation: slideDown 0.25s ease forwards;
+}
+
+/* ── number counter animation ── */
+@keyframes countUp {
+    from {
+        opacity: 0;
+        transform: translateY(4px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+.count-up {
+    animation: countUp 0.2s ease forwards;
+}
