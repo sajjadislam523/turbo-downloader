@@ -1,5 +1,6 @@
 use std::process::{Command, Stdio};
 use std::io::{BufRead, BufReader};
+use std::path::Path;
 use tauri::{AppHandle, Emitter};
 use rfd::FileDialog;
 
@@ -12,6 +13,8 @@ const RETRY_ARGS: &[&str] = &[
 // Used by batch and as the final fallback for single downloads.
 const MP4_FORMAT_SELECTOR: &str =
     "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best";
+
+const KEYWORD_MIN_RESULTS: u64 = 1;
 
 // ─── Folder picker ────────────────────────────────────────────────────────────
 #[tauri::command]
@@ -31,6 +34,37 @@ fn open_file_dialog() -> Result<String, String> {
         .pick_file()
         .ok_or_else(|| "Selection cancelled".to_string())?;
     Ok(file.to_string_lossy().to_string())
+}
+
+fn build_output_template(target_dir: &str) -> String {
+    Path::new(target_dir)
+        .join("%(title)s.%(ext)s")
+        .to_string_lossy()
+        .to_string()
+}
+
+fn build_height_selector(max_height: u64) -> String {
+    if max_height == 0 {
+        return MP4_FORMAT_SELECTOR.to_string();
+    }
+
+    format!(
+        "bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]/\
+         bestvideo[height<={max_height}][ext=mp4]+bestaudio/\
+         best[height<={max_height}][ext=mp4]/best[ext=mp4]"
+    )
+}
+
+fn build_keyword_search_url(query: &str, result_count: u64) -> String {
+    format!("ytsearch{result_count}:{query}")
+}
+
+fn validate_keyword_result_count(result_count: u64) -> Result<u64, String> {
+    if result_count < KEYWORD_MIN_RESULTS {
+        return Err("Keyword result count must be at least 1.".to_string());
+    }
+
+    Ok(result_count)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,7 +182,7 @@ fn start_turbo_download(
     format_id: String,   // actually a selector string now, not a numeric ID
     target_dir: String,
 ) -> Result<String, String> {
-    let out_template = format!("{}/%(title)s.%(ext)s", target_dir);
+    let out_template = build_output_template(&target_dir);
 
     let mut cmd = Command::new("yt-dlp");
     cmd.args([
@@ -167,6 +201,44 @@ fn start_turbo_download(
     let child = cmd.spawn().map_err(|e| format!("Failed to launch yt-dlp: {e}"))?;
     spawn_and_stream(app, child);
     Ok("Download started".to_string())
+}
+
+// ─── Keyword search download ─────────────────────────────────────────────────
+#[tauri::command]
+fn start_keyword_download(
+    app: AppHandle,
+    query: String,
+    target_dir: String,
+    max_height: u64,
+    result_count: u64,
+) -> Result<String, String> {
+    let validated_count = validate_keyword_result_count(result_count)?;
+    let search_url = build_keyword_search_url(&query, validated_count);
+    let out_template = build_output_template(&target_dir);
+    let format_selector = build_height_selector(max_height);
+
+    let _ = app.emit("batch-total", validated_count);
+
+    let mut cmd = Command::new("yt-dlp");
+    cmd.args([
+        "-f", &format_selector,
+        "-o", &out_template,
+        "--merge-output-format", "mp4",
+        "--concurrent-fragments", "5",
+        "--http-chunk-size", "10485760",
+        "--newline",
+        "--sleep-interval", "4",
+        "--max-sleep-interval", "8",
+        "--sleep-requests", "1",
+        "--ignore-errors",
+    ]);
+    cmd.args(RETRY_ARGS);
+    cmd.arg(&search_url);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let child = cmd.spawn().map_err(|e| format!("Failed to launch yt-dlp: {e}"))?;
+    spawn_and_stream(app, child);
+    Ok(format!("Keyword search started — {validated_count} result(s) queued"))
 }
 
 // ─── Batch download ───────────────────────────────────────────────────────────
@@ -192,17 +264,8 @@ fn start_batch_download(
     }
 
     let _ = app.emit("batch-total", url_count);
-    let out_template = format!("{}/%(title)s.%(ext)s", target_dir);
-
-    // Build the format selector based on the requested max height.
-    // 0 → no cap, pick the absolute best MP4 available.
-    let format_selector: String = if max_height == 0 {
-        MP4_FORMAT_SELECTOR.to_string()
-    } else {
-        format!(
-            "bestvideo[height<={max_height}][ext=mp4]+bestaudio[ext=m4a]             /bestvideo[height<={max_height}][ext=mp4]+bestaudio             /best[height<={max_height}][ext=mp4]             /best[ext=mp4]"
-        )
-    };
+    let out_template = build_output_template(&target_dir);
+    let format_selector = build_height_selector(max_height);
 
     let mut cmd = Command::new("yt-dlp");
     cmd.args([
@@ -234,6 +297,7 @@ fn start_batch_download(
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Starts the Tauri application and registers the download commands.
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -241,6 +305,7 @@ pub fn run() {
             open_file_dialog,
             fetch_video_meta,
             start_turbo_download,
+            start_keyword_download,
             start_batch_download,
         ])
         .run(tauri::generate_context!())

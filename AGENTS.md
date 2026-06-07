@@ -8,6 +8,23 @@ All Codex logs for this project live in .codex/
 - .codex/sessions/      → per-session detail files
 - .codex/plans/         → feature plan files
 
+## Idea capture protocol
+Codex must preserve every user feature thought before implementation detail is
+settled.
+
+When the user describes an idea, feature, workflow, product direction, or rough
+plan for this project:
+- Create `.codex/plans/` if it does not exist.
+- If the idea is not ready for a full feature plan, append it to
+  `.codex/plans/idea-inbox.md` with the date, source message summary,
+  known requirements, open questions, and current status.
+- If the idea is ready for implementation, create or update the relevant
+  `.codex/plans/FEATURE-SLUG.md` file before editing application code.
+- If the user changes or expands an earlier idea, update the same plan or inbox
+  entry instead of relying on conversation memory.
+- Never discard an idea because it is incomplete. Mark unclear parts as open
+  questions.
+
 ## Project architecture
 Single React application (frontend only).
 
@@ -25,9 +42,8 @@ Core rules:
 - If backend is needed, create a /server folder or separate project
 
 ## Commands to run after every change
-- npm run dev       (development server — confirm it starts)
-- npm run build     (production build — must pass)
-- npm run lint      (linting — must pass)
+- npm run tauri dev       (desktop development app — confirm it starts)
+- npm run tauri build     (production desktop build — must pass)
 
 ## Project metadata (detected by codex-init)
 - Type: single_app

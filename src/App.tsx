@@ -22,7 +22,7 @@ interface DownloadMetrics {
     size: string;
 }
 
-type AppMode = "single" | "batch";
+type AppMode = "single" | "batch" | "keyword";
 type AppStatus =
     | "idle"
     | "fetching"
@@ -100,6 +100,7 @@ function ModeToggle({
     const tabs: { key: AppMode; label: string; icon: string }[] = [
         { key: "single", label: "Single URL", icon: "⚡" },
         { key: "batch", label: "Batch File", icon: "📄" },
+        { key: "keyword", label: "Keyword", icon: "⌕" },
     ];
 
     return (
@@ -153,7 +154,7 @@ function MetricsStrip({
                 <span className="text-[#666]">SIZE </span>
                 <span className="text-[#aaa]">{metrics.size}</span>
             </span>
-            {mode === "batch" && batchTotal > 0 ? (
+            {(mode === "batch" || mode === "keyword") && batchTotal > 0 ? (
                 <span>
                     <span className="text-[#666]">FILE </span>
                     <span className="text-[#c8ff00]">
@@ -269,6 +270,11 @@ export default function App(): React.JSX.Element {
     // 0 = best available; any other value caps the height (e.g. 1080)
     const [batchResolution, setBatchResolution] = useState<number>(0);
 
+    // ── Keyword search state ────────────────────────────────────────────────────
+    const [keywordQuery, setKeywordQuery] = useState<string>("");
+    const [keywordLimit, setKeywordLimit] = useState<number>(5);
+    const [keywordResolution, setKeywordResolution] = useState<number>(1080);
+
     // ── Shared state ────────────────────────────────────────────────────────────
     const [savePath, setSavePath] = useState<string>("~/Downloads");
     const [status, setStatus] = useState<AppStatus>("idle");
@@ -298,7 +304,9 @@ export default function App(): React.JSX.Element {
         setStatusMsg(
             m === "single"
                 ? "Paste a video URL to begin"
-                : "Select a .txt file with URLs",
+                : m === "batch"
+                  ? "Select a .txt file with URLs"
+                  : "Enter a keyword to search",
         );
         setProgress(0);
         setMetrics({ speed: "--", eta: "--", size: "--" });
@@ -480,6 +488,19 @@ export default function App(): React.JSX.Element {
         }
     }, []);
 
+    const handleKeywordChange = useCallback((value: string) => {
+        setKeywordQuery(value);
+        setStatus(value.trim() === "" ? "idle" : "ready");
+        setStatusMsg(
+            value.trim() === ""
+                ? "Enter a keyword to search"
+                : "Keyword ready — backend command pending",
+        );
+        setProgress(0);
+        setBatchCurrent(0);
+        setBatchTotal(0);
+    }, []);
+
     // ── Start download (single or batch) ────────────────────────────────────────
     const startDownload = useCallback(async () => {
         setStatus("downloading");
@@ -498,7 +519,7 @@ export default function App(): React.JSX.Element {
                 setStatus("error");
                 setStatusMsg(`Launch failed: ${String(err)}`);
             }
-        } else {
+        } else if (mode === "batch") {
             setStatusMsg("Reading batch file — starting queue…");
             setBatchCurrent(0);
             try {
@@ -511,6 +532,9 @@ export default function App(): React.JSX.Element {
                 setStatus("error");
                 setStatusMsg(`Batch failed: ${String(err)}`);
             }
+        } else {
+            setStatus("ready");
+            setStatusMsg("Keyword backend will be added in step 3");
         }
     }, [mode, url, selectedFmt, savePath, batchFile]);
 
@@ -524,6 +548,12 @@ export default function App(): React.JSX.Element {
             ? (status === "ready" || status === "done") && selectedFmt !== ""
             : batchFile !== "" &&
               (status === "ready" || status === "done" || status === "error"));
+
+    const canKeywordDownload =
+        mode === "keyword" &&
+        !isDownloading &&
+        keywordQuery.trim() !== "" &&
+        (status === "ready" || status === "done" || status === "error");
 
     const statusColor: Record<AppStatus, string> = {
         idle: "#3a3a3a",
@@ -557,37 +587,37 @@ export default function App(): React.JSX.Element {
             />
 
             {/* ── Header ── */}
-            <header className="flex items-center justify-between px-7 pt-5 pb-0 shrink-0">
+            <header className="flex items-center justify-between gap-4 px-5 sm:px-7 pt-4 sm:pt-5 pb-0 shrink-0">
                 <div>
-                    <h1 className="font-display text-[22px] font-extrabold tracking-tight leading-none text-white">
+                    <h1 className="font-display text-[20px] sm:text-[22px] font-extrabold tracking-tight leading-none text-white">
                         TURBO<span className="text-[#c8ff00]">DL</span>
                         <span className="ml-2 text-[10px] font-mono font-normal tracking-[0.15em] text-[#3a3a3a] align-middle">
                             MP4 · ONLY
                         </span>
                     </h1>
-                    <p className="font-mono text-[9px] tracking-[0.25em] uppercase text-[#333] mt-0.5">
+                    <p className="font-mono text-[8px] sm:text-[9px] tracking-[0.18em] sm:tracking-[0.25em] uppercase text-[#333] mt-0.5">
                         Ultra · Parallel Chunk Engine · yt-dlp
                     </p>
                 </div>
 
                 {/* Clipboard badge — only relevant in single mode */}
                 {mode === "single" && (
-                    <div className="flex items-center gap-1.5 bg-[#111] border border-[#1e1e1e] rounded-full px-3 py-1">
+                    <div className="hidden sm:flex items-center gap-1.5 bg-[#111] border border-[#1e1e1e] rounded-full px-3 py-1 min-w-0">
                         <StatusDot
                             active={clipMsg !== "Auto-clipboard active"}
                         />
                         <span className="font-mono text-[9px] tracking-wider uppercase text-[#555]">
-                            {clipMsg}
+                            {truncate(clipMsg, 30)}
                         </span>
                     </div>
                 )}
             </header>
 
             {/* Divider */}
-            <div className="mx-7 mt-3.5 mb-0 h-px bg-linear-to-r from-transparent via-[#1e1e1e] to-transparent" />
+            <div className="mx-5 sm:mx-7 mt-3 mb-0 h-px bg-linear-to-r from-transparent via-[#1e1e1e] to-transparent" />
 
             {/* ── Body ── */}
-            <main className="flex-1 flex flex-col gap-3.5 px-7 pt-4 pb-3 overflow-hidden">
+            <main className="flex-1 min-h-0 flex flex-col gap-3 px-5 sm:px-7 pt-3 sm:pt-4 pb-3 overflow-y-auto overflow-x-hidden">
                 {/* MODE TOGGLE */}
                 <ModeToggle mode={mode} onChange={handleModeChange} />
 
@@ -647,7 +677,7 @@ export default function App(): React.JSX.Element {
                         <FieldLabel>
                             Link List File (.txt — one URL per line)
                         </FieldLabel>
-                        <div className="flex items-stretch gap-2">
+                        <div className="flex flex-col sm:flex-row sm:items-stretch gap-2">
                             {/* File display */}
                             <div className="flex-1 bg-[#111] border border-[#242424] rounded-lg px-4 py-3 flex items-center gap-2.5 min-w-0">
                                 <span className="text-[#c8ff00] text-[13px] shrink-0">
@@ -666,8 +696,8 @@ export default function App(): React.JSX.Element {
                             <button
                                 onClick={chooseBatchFile}
                                 className="
-                  shrink-0 bg-[#161616] border border-[#2a2a2a] hover:border-[#444]
-                  text-[#888] hover:text-[#ccc] rounded-lg px-4 text-[11px]
+                  shrink-0 min-h-[40px] bg-[#161616] border border-[#2a2a2a] hover:border-[#444]
+                  text-[#888] hover:text-[#ccc] rounded-lg px-4 py-2 text-[11px]
                   font-mono tracking-wider uppercase transition-all
                 "
                             >
@@ -675,11 +705,11 @@ export default function App(): React.JSX.Element {
                             </button>
                         </div>
                         {/* Batch resolution picker */}
-                        <div className="mt-2.5 flex items-center gap-3">
+                        <div className="mt-2.5 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
                             <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#444] shrink-0">
                                 Max Resolution
                             </span>
-                            <div className="flex gap-1.5 flex-wrap">
+                            <div className="grid grid-cols-4 sm:flex gap-1.5 sm:flex-wrap">
                                 {(
                                     [
                                         { label: "Best", value: 0 },
@@ -714,9 +744,92 @@ export default function App(): React.JSX.Element {
                     </div>
                 )}
 
+                {/* ── KEYWORD MODE INPUT ── */}
+                {mode === "keyword" && (
+                    <div>
+                        <FieldLabel>Search Keyword</FieldLabel>
+                        <div className="relative">
+                            <input
+                                type="text"
+                                value={keywordQuery}
+                                onChange={(event) =>
+                                    handleKeywordChange(event.target.value)
+                                }
+                                placeholder="artist name live performance"
+                                className="
+                    acid-focus w-full bg-[#111] border border-[#242424] rounded-lg
+                    px-4 py-3 pr-11 text-[13px] font-mono text-[#ddd]
+                    placeholder-[#2a2a2a] transition-all focus:border-[#c8ff00]/30
+                  "
+                            />
+                            <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#2a2a2a] text-sm">
+                                ⌕
+                            </span>
+                        </div>
+                        <div className="mt-2.5 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                                <FieldLabel>Results</FieldLabel>
+                                <select
+                                    value={keywordLimit}
+                                    onChange={(event) =>
+                                        setKeywordLimit(
+                                            Number(event.target.value),
+                                        )
+                                    }
+                                    className="
+                      acid-focus w-full h-[40px] bg-[#111] border border-[#242424] rounded-lg
+                      px-3 text-[11px] font-mono text-[#aaa] focus:border-[#c8ff00]/30
+                      transition-all appearance-none cursor-pointer
+                    "
+                                    style={{ backgroundImage: "none" }}
+                                >
+                                    {[1, 3, 5, 10, 15, 20].map((count) => (
+                                        <option key={count} value={count}>
+                                            Top {count}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <FieldLabel>Max Resolution</FieldLabel>
+                                <div className="grid grid-cols-4 gap-1.5">
+                                    {(
+                                        [
+                                            { label: "Best", value: 0 },
+                                            { label: "1080", value: 1080 },
+                                            { label: "720", value: 720 },
+                                            { label: "480", value: 480 },
+                                        ] as {
+                                            label: string;
+                                            value: number;
+                                        }[]
+                                    ).map((option) => (
+                                        <button
+                                            key={option.value}
+                                            onClick={() =>
+                                                setKeywordResolution(
+                                                    option.value,
+                                                )
+                                            }
+                                            className={`px-2 py-2 rounded-md font-mono text-[10px] tracking-wider uppercase transition-all border ${
+                                                keywordResolution ===
+                                                option.value
+                                                    ? "bg-[#c8ff00] text-[#0a0a0a] border-[#c8ff00] shadow-[0_0_8px_#c8ff0033]"
+                                                    : "bg-transparent text-[#555] border-[#2a2a2a] hover:border-[#444] hover:text-[#888]"
+                                            }`}
+                                        >
+                                            {option.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* ── SAVE PATH + FORMAT (shared row) ── */}
                 <div
-                    className={`grid gap-3 ${mode === "single" && meta ? "grid-cols-2" : "grid-cols-1"}`}
+                    className={`grid gap-3 ${mode === "single" && meta ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}
                 >
                     {/* Save path */}
                     <div>
@@ -765,7 +878,7 @@ export default function App(): React.JSX.Element {
                     )}
 
                     {/* Batch mode: MP4 badge instead of dropdown */}
-                    {mode === "batch" && (
+                    {(mode === "batch" || mode === "keyword") && (
                         <div>
                             <FieldLabel>Output Format</FieldLabel>
                             <div className="h-[44px] bg-[#111] border border-[#1e1e1e] rounded-lg px-3 flex items-center gap-2">
@@ -784,16 +897,17 @@ export default function App(): React.JSX.Element {
                 <div>
                     <div className="flex items-center justify-between mb-1.5">
                         <FieldLabel>
-                            {mode === "batch" && batchTotal > 0
+                            {(mode === "batch" || mode === "keyword") &&
+                            batchTotal > 0
                                 ? `Progress — file ${batchCurrent} of ${batchTotal}`
                                 : "Download Progress"}
                         </FieldLabel>
                         <span
-                            className="font-mono text-[10px] tracking-widest uppercase flex items-center"
+                            className="min-w-0 max-w-[58%] text-right font-mono text-[10px] tracking-widest uppercase flex items-center justify-end"
                             style={{ color: statusColor[status] }}
                         >
                             <StatusDot active={isDownloading} />
-                            {statusMsg}
+                            <span className="truncate">{statusMsg}</span>
                         </span>
                     </div>
                     <ProgressBar percent={progress} />
@@ -811,10 +925,10 @@ export default function App(): React.JSX.Element {
 
                 {/* DOWNLOAD BUTTON */}
                 <button
-                    disabled={!canDownload}
+                    disabled={mode === "keyword" || !canDownload}
                     onClick={startDownload}
                     className="
-            w-full h-12 rounded-xl font-display font-bold text-[14px]
+            w-full min-h-12 rounded-xl font-display font-bold text-[13px] sm:text-[14px]
             tracking-widest uppercase transition-all
             disabled:opacity-25 disabled:cursor-not-allowed
             enabled:hover:scale-[1.01] enabled:active:scale-[0.99]
@@ -833,14 +947,18 @@ export default function App(): React.JSX.Element {
                     {isDownloading ? (
                         <span className="flex items-center justify-center gap-2">
                             <Spinner />
-                            {mode === "batch"
+                            {mode === "batch" || mode === "keyword"
                                 ? batchTotal > 0
                                     ? `Downloading ${batchCurrent}/${batchTotal}…`
-                                    : "Preparing batch queue…"
+                                    : "Preparing queue…"
                                 : "Chunk lanes active…"}
                         </span>
                     ) : mode === "batch" ? (
                         "⚡ Start Batch Download (MP4)"
+                    ) : mode === "keyword" ? (
+                        canKeywordDownload
+                            ? "Keyword Download Ready in Step 3"
+                            : "Enter Keyword to Prepare Search"
                     ) : (
                         "⚡ Download via Parallel Chunks"
                     )}
@@ -848,7 +966,7 @@ export default function App(): React.JSX.Element {
             </main>
 
             {/* ── Footer ── */}
-            <footer className="shrink-0 flex items-center justify-between px-7 py-2 border-t border-[#111]">
+            <footer className="shrink-0 hidden sm:flex items-center justify-between px-7 py-2 border-t border-[#111]">
                 <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-[#2a2a2a]">
                     yt-dlp · ffmpeg · 5× fragment engine
                 </span>
