@@ -271,6 +271,7 @@ export default function App(): React.JSX.Element {
     const [batchResolution, setBatchResolution] = useState<number>(0);
 
     // ── Keyword search state ────────────────────────────────────────────────────
+    const [keywordSourceUrl, setKeywordSourceUrl] = useState<string>("");
     const [keywordQuery, setKeywordQuery] = useState<string>("");
     const [keywordLimit, setKeywordLimit] = useState<number>(5);
     const [keywordResolution, setKeywordResolution] = useState<number>(1080);
@@ -532,11 +533,33 @@ export default function App(): React.JSX.Element {
                 setStatus("error");
                 setStatusMsg(`Batch failed: ${String(err)}`);
             }
-        } else {
-            setStatus("ready");
-            setStatusMsg("Keyword backend will be added in step 3");
+        } else if (mode === "keyword") {
+            setStatusMsg("Searching and queuing results…");
+            setBatchCurrent(0);
+            try {
+                await invoke("start_keyword_download", {
+                    sourceUrl: keywordSourceUrl.trim(),
+                    query: keywordQuery.trim(),
+                    targetDir: savePath,
+                    maxHeight: keywordResolution,
+                    resultCount: keywordLimit,
+                });
+            } catch (err) {
+                setStatus("error");
+                setStatusMsg(`Keyword search failed: ${String(err)}`);
+            }
         }
-    }, [mode, url, selectedFmt, savePath, batchFile]);
+    }, [
+        mode,
+        url,
+        selectedFmt,
+        savePath,
+        batchFile,
+        keywordSourceUrl,
+        keywordQuery,
+        keywordLimit,
+        keywordResolution,
+    ]);
 
     // ── Derived UI helpers ───────────────────────────────────────────────────────
     const isDownloading = status === "downloading";
@@ -546,8 +569,16 @@ export default function App(): React.JSX.Element {
         !isDownloading &&
         (mode === "single"
             ? (status === "ready" || status === "done") && selectedFmt !== ""
-            : batchFile !== "" &&
-              (status === "ready" || status === "done" || status === "error"));
+            : mode === "batch"
+              ? batchFile !== "" &&
+                (status === "ready" || status === "done" || status === "error")
+              : mode === "keyword"
+                ? keywordSourceUrl.trim() !== "" &&
+                  keywordQuery.trim() !== "" &&
+                  (status === "ready" ||
+                      status === "done" ||
+                      status === "error")
+                : false);
 
     const canKeywordDownload =
         mode === "keyword" &&
@@ -747,7 +778,26 @@ export default function App(): React.JSX.Element {
                 {/* ── KEYWORD MODE INPUT ── */}
                 {mode === "keyword" && (
                     <div>
-                        <FieldLabel>Search Keyword</FieldLabel>
+                        <FieldLabel>Source URL</FieldLabel>
+                        <div className="relative">
+                            <input
+                                type="text"
+                                value={keywordSourceUrl}
+                                onChange={(event) =>
+                                    setKeywordSourceUrl(event.target.value)
+                                }
+                                placeholder="https://youtube.com/channel/... or any video website"
+                                className="
+                    acid-focus w-full bg-[#111] border border-[#242424] rounded-lg
+                    px-4 py-3 pr-11 text-[13px] font-mono text-[#ddd]
+                    placeholder-[#2a2a2a] transition-all focus:border-[#c8ff00]/30
+                  "
+                            />
+                            <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#2a2a2a] text-sm">
+                                🔗
+                            </span>
+                        </div>
+                        <FieldLabel className="mt-4">Search Keyword</FieldLabel>
                         <div className="relative">
                             <input
                                 type="text"
@@ -925,7 +975,7 @@ export default function App(): React.JSX.Element {
 
                 {/* DOWNLOAD BUTTON */}
                 <button
-                    disabled={mode === "keyword" || !canDownload}
+                    disabled={!canDownload}
                     onClick={startDownload}
                     className="
             w-full min-h-12 rounded-xl font-display font-bold text-[13px] sm:text-[14px]
@@ -956,9 +1006,11 @@ export default function App(): React.JSX.Element {
                     ) : mode === "batch" ? (
                         "⚡ Start Batch Download (MP4)"
                     ) : mode === "keyword" ? (
-                        canKeywordDownload
-                            ? "Keyword Download Ready in Step 3"
-                            : "Enter Keyword to Prepare Search"
+                        canKeywordDownload ? (
+                            "⚡ Start Keyword Search & Download (MP4)"
+                        ) : (
+                            "Enter Keyword to Prepare Search"
+                        )
                     ) : (
                         "⚡ Download via Parallel Chunks"
                     )}
