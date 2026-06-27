@@ -212,7 +212,11 @@ fn start_keyword_download(
     if source_url.trim().is_empty() {
         return Err("Source URL is required for keyword search.".to_string());
     }
-    
+
+    if query.trim().is_empty() {
+        return Err("Search query cannot be empty.".to_string());
+    }
+
     let validated_count = validate_keyword_result_count(result_count)?;
     let out_template = build_output_template(&target_dir);
     let format_selector = build_height_selector(max_height);
@@ -232,16 +236,18 @@ fn start_keyword_download(
         "--sleep-requests", "1",
         "--ignore-errors",
     ]);
-    
+
     // Add match filter to search for keyword in video title
-    let match_filter = format!("title ~= '{}'", query.replace("'", "\\'"));
+    // Properly escape regex special characters to prevent injection and unexpected behavior
+    let escaped_query = escape_regex(&query);
+    let match_filter = format!("title ~= '{}'", escaped_query);
     cmd.args(["--match-filters", &match_filter]);
-    
+
     // Limit results if specified
     if result_count > 0 && result_count < u64::MAX {
         cmd.args(["--max-downloads", &result_count.to_string()]);
     }
-    
+
     cmd.args(RETRY_ARGS);
     cmd.arg(&source_url);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -249,6 +255,12 @@ fn start_keyword_download(
     let child = cmd.spawn().map_err(|e| format!("Failed to launch yt-dlp: {e}"))?;
     spawn_and_stream(app, child);
     Ok(format!("Keyword search started — searching within source for '{}' (up to {} result(s))", query, validated_count))
+}
+
+// Escape regex special characters to prevent injection and ensure literal matching
+fn escape_regex(text: &str) -> String {
+    // Escape all regex special characters: . * + ? ^ $ ( ) [ ] { } | \
+    text.replace(|c: char| ".+?^$()[]{}|\\".contains(c), |c| format!("\\{c}"))
 }
 
 // ─── Batch download ───────────────────────────────────────────────────────────
