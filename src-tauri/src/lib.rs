@@ -260,7 +260,7 @@ fn start_keyword_download(
 // Escape regex special characters to prevent injection and ensure literal matching
 fn escape_regex(text: &str) -> String {
     // Escape all regex special characters: . * + ? ^ $ ( ) [ ] { } | \
-    text.replace(|c: char| ".+?^$()[]{}|\\".contains(c), |c| format!("\\{c}"))
+    text.replace(|c: char| ".+?^$()[]{}\\|".contains(c), |c| format!("\\{}", c))
 }
 
 // ─── Batch download ───────────────────────────────────────────────────────────
