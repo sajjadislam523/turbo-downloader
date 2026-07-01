@@ -22,7 +22,7 @@ interface DownloadMetrics {
     size: string;
 }
 
-type AppMode = "single" | "batch";
+type AppMode = "single" | "batch" | "keyword";
 type AppStatus =
     | "idle"
     | "fetching"
@@ -47,9 +47,17 @@ function StatusDot({ active }: { active: boolean }) {
     );
 }
 
-function FieldLabel({ children }: { children: React.ReactNode }) {
+function FieldLabel({
+    children,
+    className = "",
+}: {
+    children: React.ReactNode;
+    className?: string;
+}) {
     return (
-        <span className="block text-[10px] font-mono font-medium tracking-[0.2em] uppercase text-[#555] mb-1.5">
+        <span
+            className={`block text-[10px] font-mono font-medium tracking-[0.2em] uppercase text-[#555] mb-1.5 ${className}`}
+        >
             {children}
         </span>
     );
@@ -87,6 +95,62 @@ function Spinner() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Toast — readable, word-wrapping, dismissible notification.
+//
+// The compact status pill in the progress block truncates to a single line,
+// which is fine for routine status text but hides anything actionable (like
+// a yt-dlp update warning) unless the window is stretched wide. The toast
+// gives long/important messages a proper place to be fully readable.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ToastMessage {
+    id: number;
+    text: string;
+    kind: "error" | "success";
+}
+
+function Toast({
+    toast,
+    onDismiss,
+}: {
+    toast: ToastMessage | null;
+    onDismiss: () => void;
+}) {
+    if (!toast) return null;
+    const isError = toast.kind === "error";
+
+    return (
+        <div
+            key={toast.id}
+            role="alert"
+            className={`slide-in absolute bottom-4 left-4 right-4 sm:left-auto sm:right-4 sm:w-[380px] z-50 rounded-xl border px-4 py-3 shadow-2xl backdrop-blur-sm ${
+                isError
+                    ? "bg-[#1a0505]/95 border-[#ff4455]/40"
+                    : "bg-[#051a10]/95 border-[#00ff99]/40"
+            }`}
+        >
+            <div className="flex items-start gap-2.5">
+                <span
+                    className={`text-[13px] shrink-0 mt-0.5 ${isError ? "text-[#ff4455]" : "text-[#00ff99]"}`}
+                >
+                    {isError ? "⚠" : "✓"}
+                </span>
+                <p className="flex-1 min-w-0 text-[11px] font-mono leading-relaxed text-[#ccc] break-words whitespace-pre-wrap">
+                    {toast.text}
+                </p>
+                <button
+                    onClick={onDismiss}
+                    className="shrink-0 text-[#555] hover:text-[#aaa] text-[13px] leading-none transition-colors"
+                    aria-label="Dismiss notification"
+                >
+                    ✕
+                </button>
+            </div>
+        </div>
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Mode toggle — Single URL / Batch File
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -100,6 +164,7 @@ function ModeToggle({
     const tabs: { key: AppMode; label: string; icon: string }[] = [
         { key: "single", label: "Single URL", icon: "⚡" },
         { key: "batch", label: "Batch File", icon: "📄" },
+        { key: "keyword", label: "Keyword", icon: "⌕" },
     ];
 
     return (
@@ -153,7 +218,7 @@ function MetricsStrip({
                 <span className="text-[#666]">SIZE </span>
                 <span className="text-[#aaa]">{metrics.size}</span>
             </span>
-            {mode === "batch" && batchTotal > 0 ? (
+            {(mode === "batch" || mode === "keyword") && batchTotal > 0 ? (
                 <span>
                     <span className="text-[#666]">FILE </span>
                     <span className="text-[#c8ff00]">
@@ -218,20 +283,13 @@ function parseProgressLine(raw: string): ParsedLine {
 // Raw log strip
 // ─────────────────────────────────────────────────────────────────────────────
 
-function RawLogStrip({ status }: { status: AppStatus }) {
-    const [lastLine, setLastLine] = useState<string>("");
-
-    useEffect(() => {
-        let unlisten: (() => void) | undefined;
-        listen<string>("download-progress", (ev) => {
-            const s = ev.payload.replace(/\x1b\[[0-9;]*m/g, "").trim();
-            if (s) setLastLine(s);
-        }).then((u) => {
-            unlisten = u;
-        });
-        return () => unlisten?.();
-    }, []);
-
+function RawLogStrip({
+    status,
+    lastLine,
+}: {
+    status: AppStatus;
+    lastLine: string;
+}) {
     const idle =
         status === "idle" || status === "fetching" || status === "ready";
 
@@ -269,6 +327,12 @@ export default function App(): React.JSX.Element {
     // 0 = best available; any other value caps the height (e.g. 1080)
     const [batchResolution, setBatchResolution] = useState<number>(0);
 
+    // ── Keyword search state ────────────────────────────────────────────────────
+    const [keywordSourceUrl, setKeywordSourceUrl] = useState<string>("");
+    const [keywordQuery, setKeywordQuery] = useState<string>("");
+    const [keywordLimit, setKeywordLimit] = useState<number>(5);
+    const [keywordResolution, setKeywordResolution] = useState<number>(1080);
+
     // ── Shared state ────────────────────────────────────────────────────────────
     const [savePath, setSavePath] = useState<string>("~/Downloads");
     const [status, setStatus] = useState<AppStatus>("idle");
@@ -281,6 +345,9 @@ export default function App(): React.JSX.Element {
         eta: "--",
         size: "--",
     });
+    const [rawLine, setRawLine] = useState<string>("");
+    const [toast, setToast] = useState<ToastMessage | null>(null);
+    const [updatingEngine, setUpdatingEngine] = useState<boolean>(false);
 
     // ── Refs ─────────────────────────────────────────────────────────────────────
     const lastFetchedUrl = useRef<string>("");
@@ -290,6 +357,23 @@ export default function App(): React.JSX.Element {
     const fetchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
     // Generation counter — lets us discard results from superseded fetches
     const fetchGen = useRef<number>(0);
+    const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Show a toast, replacing any currently-visible one, auto-dismissing
+    // after 9s unless the user closes it first.
+    const pushToast = useCallback(
+        (text: string, kind: ToastMessage["kind"] = "error") => {
+            setToast({ id: Date.now(), text, kind });
+            if (toastTimer.current) clearTimeout(toastTimer.current);
+            toastTimer.current = setTimeout(() => setToast(null), 9000);
+        },
+        [],
+    );
+
+    const dismissToast = useCallback(() => {
+        if (toastTimer.current) clearTimeout(toastTimer.current);
+        setToast(null);
+    }, []);
 
     // ── Reset shared download state when switching modes ────────────────────────
     const handleModeChange = useCallback((m: AppMode) => {
@@ -298,7 +382,9 @@ export default function App(): React.JSX.Element {
         setStatusMsg(
             m === "single"
                 ? "Paste a video URL to begin"
-                : "Select a .txt file with URLs",
+                : m === "batch"
+                  ? "Select a .txt file with URLs"
+                  : "Enter a keyword to search",
         );
         setProgress(0);
         setMetrics({ speed: "--", eta: "--", size: "--" });
@@ -374,6 +460,11 @@ export default function App(): React.JSX.Element {
             // Per-file progress
             subs.push(
                 await listen<string>("download-progress", (ev) => {
+                    const cleanLine = ev.payload
+                        .replace(/\x1b\[[0-9;]*m/g, "")
+                        .trim();
+                    if (cleanLine) setRawLine(cleanLine);
+
                     const p = parseProgressLine(ev.payload);
                     if (p.percent !== undefined) setProgress(p.percent);
                     if (p.speed !== undefined)
@@ -411,6 +502,7 @@ export default function App(): React.JSX.Element {
                 await listen<string>("download-error", (ev) => {
                     setStatus("error");
                     setStatusMsg(`Error: ${ev.payload}`);
+                    pushToast(ev.payload, "error");
                 }),
             );
         };
@@ -450,8 +542,9 @@ export default function App(): React.JSX.Element {
             if (myGen !== fetchGen.current) return;
             setStatus("error");
             setStatusMsg(`Fetch failed: ${String(err)}`);
+            pushToast(`Fetch failed: ${String(err)}`, "error");
         }
-    }, []);
+    }, [pushToast]);
 
     // ── Choose save folder ───────────────────────────────────────────────────────
     const chooseSaveDir = useCallback(async () => {
@@ -480,6 +573,19 @@ export default function App(): React.JSX.Element {
         }
     }, []);
 
+    const handleKeywordChange = useCallback((value: string) => {
+        setKeywordQuery(value);
+        setStatus(value.trim() === "" ? "idle" : "ready");
+        setStatusMsg(
+            value.trim() === ""
+                ? "Enter a keyword to search"
+                : "Keyword ready — backend command pending",
+        );
+        setProgress(0);
+        setBatchCurrent(0);
+        setBatchTotal(0);
+    }, []);
+
     // ── Start download (single or batch) ────────────────────────────────────────
     const startDownload = useCallback(async () => {
         setStatus("downloading");
@@ -497,8 +603,9 @@ export default function App(): React.JSX.Element {
             } catch (err) {
                 setStatus("error");
                 setStatusMsg(`Launch failed: ${String(err)}`);
+                pushToast(`Launch failed: ${String(err)}`, "error");
             }
-        } else {
+        } else if (mode === "batch") {
             setStatusMsg("Reading batch file — starting queue…");
             setBatchCurrent(0);
             try {
@@ -510,9 +617,52 @@ export default function App(): React.JSX.Element {
             } catch (err) {
                 setStatus("error");
                 setStatusMsg(`Batch failed: ${String(err)}`);
+                pushToast(`Batch failed: ${String(err)}`, "error");
+            }
+        } else if (mode === "keyword") {
+            setStatusMsg("Searching and queuing results…");
+            setBatchCurrent(0);
+            try {
+                await invoke("start_keyword_download", {
+                    sourceUrl: keywordSourceUrl.trim(),
+                    query: keywordQuery.trim(),
+                    targetDir: savePath,
+                    maxHeight: keywordResolution,
+                    resultCount: keywordLimit,
+                });
+            } catch (err) {
+                setStatus("error");
+                setStatusMsg(`Keyword search failed: ${String(err)}`);
+                pushToast(`Keyword search failed: ${String(err)}`, "error");
             }
         }
-    }, [mode, url, selectedFmt, savePath, batchFile]);
+    }, [
+        mode,
+        url,
+        selectedFmt,
+        savePath,
+        batchFile,
+        keywordSourceUrl,
+        keywordQuery,
+        keywordLimit,
+        keywordResolution,
+        pushToast,
+    ]);
+
+    const updateEngine = useCallback(async () => {
+        setUpdatingEngine(true);
+        try {
+            const result = await invoke<string>("update_yt_dlp");
+            pushToast(result, "success");
+        } catch (err) {
+            pushToast(
+                `yt-dlp update failed: ${String(err)}\n\nIf this is a permissions error, either run "sudo yt-dlp -U" in a terminal, or reinstall yt-dlp to a user-writable location like ~/.local/bin.`,
+                "error",
+            );
+        } finally {
+            setUpdatingEngine(false);
+        }
+    }, [pushToast]);
 
     // ── Derived UI helpers ───────────────────────────────────────────────────────
     const isDownloading = status === "downloading";
@@ -522,8 +672,23 @@ export default function App(): React.JSX.Element {
         !isDownloading &&
         (mode === "single"
             ? (status === "ready" || status === "done") && selectedFmt !== ""
-            : batchFile !== "" &&
-              (status === "ready" || status === "done" || status === "error"));
+            : mode === "batch"
+              ? batchFile !== "" &&
+                (status === "ready" || status === "done" || status === "error")
+              : mode === "keyword"
+                ? keywordSourceUrl.trim() !== "" &&
+                  keywordQuery.trim() !== "" &&
+                  (status === "ready" ||
+                      status === "done" ||
+                      status === "error")
+                : false);
+
+    const canKeywordDownload =
+        mode === "keyword" &&
+        !isDownloading &&
+        keywordSourceUrl.trim() !== "" &&
+        keywordQuery.trim() !== "" &&
+        (status === "ready" || status === "done" || status === "error");
 
     const statusColor: Record<AppStatus, string> = {
         idle: "#3a3a3a",
@@ -556,38 +721,60 @@ export default function App(): React.JSX.Element {
                 }}
             />
 
+            {/* Error / success notifications — replaces the old cramped truncated status pill for anything that actually needs reading in full */}
+            <Toast toast={toast} onDismiss={dismissToast} />
+
             {/* ── Header ── */}
-            <header className="flex items-center justify-between px-7 pt-5 pb-0 shrink-0">
+            <header className="flex items-center justify-between gap-4 px-5 sm:px-7 pt-4 sm:pt-5 pb-0 shrink-0">
                 <div>
-                    <h1 className="font-display text-[22px] font-extrabold tracking-tight leading-none text-white">
+                    <h1 className="font-display text-[20px] sm:text-[22px] font-extrabold tracking-tight leading-none text-white">
                         TURBO<span className="text-[#c8ff00]">DL</span>
                         <span className="ml-2 text-[10px] font-mono font-normal tracking-[0.15em] text-[#3a3a3a] align-middle">
                             MP4 · ONLY
                         </span>
                     </h1>
-                    <p className="font-mono text-[9px] tracking-[0.25em] uppercase text-[#333] mt-0.5">
+                    <p className="font-mono text-[8px] sm:text-[9px] tracking-[0.18em] sm:tracking-[0.25em] uppercase text-[#333] mt-0.5">
                         Ultra · Parallel Chunk Engine · yt-dlp
                     </p>
                 </div>
 
-                {/* Clipboard badge — only relevant in single mode */}
-                {mode === "single" && (
-                    <div className="flex items-center gap-1.5 bg-[#111] border border-[#1e1e1e] rounded-full px-3 py-1">
-                        <StatusDot
-                            active={clipMsg !== "Auto-clipboard active"}
-                        />
-                        <span className="font-mono text-[9px] tracking-wider uppercase text-[#555]">
-                            {clipMsg}
+                <div className="flex items-center gap-2">
+                    {/* Clipboard badge — only relevant in single mode */}
+                    {mode === "single" && (
+                        <div className="hidden sm:flex items-center gap-1.5 bg-[#111] border border-[#1e1e1e] rounded-full px-3 py-1 min-w-0">
+                            <StatusDot
+                                active={clipMsg !== "Auto-clipboard active"}
+                            />
+                            <span className="font-mono text-[9px] tracking-wider uppercase text-[#555]">
+                                {truncate(clipMsg, 30)}
+                            </span>
+                        </div>
+                    )}
+
+                    {/* Update Engine — runs `yt-dlp -U` and reports the result via toast */}
+                    <button
+                        onClick={updateEngine}
+                        disabled={updatingEngine}
+                        title="Update yt-dlp"
+                        className="flex items-center gap-1.5 bg-[#111] border border-[#1e1e1e] hover:border-[#333] rounded-full px-3 py-1 transition-colors disabled:opacity-50"
+                    >
+                        <span
+                            className={`text-[#888] text-[10px] ${updatingEngine ? "animate-spin" : ""}`}
+                        >
+                            ⟳
                         </span>
-                    </div>
-                )}
+                        <span className="font-mono text-[9px] tracking-wider uppercase text-[#555]">
+                            {updatingEngine ? "Updating…" : "Update Engine"}
+                        </span>
+                    </button>
+                </div>
             </header>
 
             {/* Divider */}
-            <div className="mx-7 mt-3.5 mb-0 h-px bg-linear-to-r from-transparent via-[#1e1e1e] to-transparent" />
+            <div className="mx-5 sm:mx-7 mt-3 mb-0 h-px bg-linear-to-r from-transparent via-[#1e1e1e] to-transparent" />
 
             {/* ── Body ── */}
-            <main className="flex-1 flex flex-col gap-3.5 px-7 pt-4 pb-3 overflow-hidden">
+            <main className="flex-1 min-h-0 flex flex-col gap-3 px-5 sm:px-7 pt-3 sm:pt-4 pb-3 overflow-y-auto overflow-x-hidden">
                 {/* MODE TOGGLE */}
                 <ModeToggle mode={mode} onChange={handleModeChange} />
 
@@ -647,7 +834,7 @@ export default function App(): React.JSX.Element {
                         <FieldLabel>
                             Link List File (.txt — one URL per line)
                         </FieldLabel>
-                        <div className="flex items-stretch gap-2">
+                        <div className="flex flex-col sm:flex-row sm:items-stretch gap-2">
                             {/* File display */}
                             <div className="flex-1 bg-[#111] border border-[#242424] rounded-lg px-4 py-3 flex items-center gap-2.5 min-w-0">
                                 <span className="text-[#c8ff00] text-[13px] shrink-0">
@@ -666,8 +853,8 @@ export default function App(): React.JSX.Element {
                             <button
                                 onClick={chooseBatchFile}
                                 className="
-                  shrink-0 bg-[#161616] border border-[#2a2a2a] hover:border-[#444]
-                  text-[#888] hover:text-[#ccc] rounded-lg px-4 text-[11px]
+                  shrink-0 min-h-[40px] bg-[#161616] border border-[#2a2a2a] hover:border-[#444]
+                  text-[#888] hover:text-[#ccc] rounded-lg px-4 py-2 text-[11px]
                   font-mono tracking-wider uppercase transition-all
                 "
                             >
@@ -675,11 +862,11 @@ export default function App(): React.JSX.Element {
                             </button>
                         </div>
                         {/* Batch resolution picker */}
-                        <div className="mt-2.5 flex items-center gap-3">
+                        <div className="mt-2.5 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
                             <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-[#444] shrink-0">
                                 Max Resolution
                             </span>
-                            <div className="flex gap-1.5 flex-wrap">
+                            <div className="grid grid-cols-4 sm:flex gap-1.5 sm:flex-wrap">
                                 {(
                                     [
                                         { label: "Best", value: 0 },
@@ -714,9 +901,111 @@ export default function App(): React.JSX.Element {
                     </div>
                 )}
 
+                {/* ── KEYWORD MODE INPUT ── */}
+                {mode === "keyword" && (
+                    <div>
+                        <FieldLabel>Source URL</FieldLabel>
+                        <div className="relative">
+                            <input
+                                type="text"
+                                value={keywordSourceUrl}
+                                onChange={(event) =>
+                                    setKeywordSourceUrl(event.target.value)
+                                }
+                                placeholder="https://youtube.com/channel/... or any video website"
+                                className="
+                    acid-focus w-full bg-[#111] border border-[#242424] rounded-lg
+                    px-4 py-3 pr-11 text-[13px] font-mono text-[#ddd]
+                    placeholder-[#2a2a2a] transition-all focus:border-[#c8ff00]/30
+                  "
+                            />
+                            <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#2a2a2a] text-sm">
+                                🔗
+                            </span>
+                        </div>
+                        <FieldLabel className="mt-4">Search Keyword</FieldLabel>
+                        <div className="relative">
+                            <input
+                                type="text"
+                                value={keywordQuery}
+                                onChange={(event) =>
+                                    handleKeywordChange(event.target.value)
+                                }
+                                placeholder="artist name live performance"
+                                className="
+                    acid-focus w-full bg-[#111] border border-[#242424] rounded-lg
+                    px-4 py-3 pr-11 text-[13px] font-mono text-[#ddd]
+                    placeholder-[#2a2a2a] transition-all focus:border-[#c8ff00]/30
+                  "
+                            />
+                            <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#2a2a2a] text-sm">
+                                ⌕
+                            </span>
+                        </div>
+                        <div className="mt-2.5 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                                <FieldLabel>Results</FieldLabel>
+                                <select
+                                    value={keywordLimit}
+                                    onChange={(event) =>
+                                        setKeywordLimit(
+                                            Number(event.target.value),
+                                        )
+                                    }
+                                    className="
+                      acid-focus w-full h-[40px] bg-[#111] border border-[#242424] rounded-lg
+                      px-3 text-[11px] font-mono text-[#aaa] focus:border-[#c8ff00]/30
+                      transition-all appearance-none cursor-pointer
+                    "
+                                    style={{ backgroundImage: "none" }}
+                                >
+                                    {[1, 3, 5, 10, 15, 20].map((count) => (
+                                        <option key={count} value={count}>
+                                            Top {count}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <FieldLabel>Max Resolution</FieldLabel>
+                                <div className="grid grid-cols-4 gap-1.5">
+                                    {(
+                                        [
+                                            { label: "Best", value: 0 },
+                                            { label: "1080", value: 1080 },
+                                            { label: "720", value: 720 },
+                                            { label: "480", value: 480 },
+                                        ] as {
+                                            label: string;
+                                            value: number;
+                                        }[]
+                                    ).map((option) => (
+                                        <button
+                                            key={option.value}
+                                            onClick={() =>
+                                                setKeywordResolution(
+                                                    option.value,
+                                                )
+                                            }
+                                            className={`px-2 py-2 rounded-md font-mono text-[10px] tracking-wider uppercase transition-all border ${
+                                                keywordResolution ===
+                                                option.value
+                                                    ? "bg-[#c8ff00] text-[#0a0a0a] border-[#c8ff00] shadow-[0_0_8px_#c8ff0033]"
+                                                    : "bg-transparent text-[#555] border-[#2a2a2a] hover:border-[#444] hover:text-[#888]"
+                                            }`}
+                                        >
+                                            {option.label}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
                 {/* ── SAVE PATH + FORMAT (shared row) ── */}
                 <div
-                    className={`grid gap-3 ${mode === "single" && meta ? "grid-cols-2" : "grid-cols-1"}`}
+                    className={`grid gap-3 ${mode === "single" && meta ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}
                 >
                     {/* Save path */}
                     <div>
@@ -765,7 +1054,7 @@ export default function App(): React.JSX.Element {
                     )}
 
                     {/* Batch mode: MP4 badge instead of dropdown */}
-                    {mode === "batch" && (
+                    {(mode === "batch" || mode === "keyword") && (
                         <div>
                             <FieldLabel>Output Format</FieldLabel>
                             <div className="h-[44px] bg-[#111] border border-[#1e1e1e] rounded-lg px-3 flex items-center gap-2">
@@ -784,16 +1073,17 @@ export default function App(): React.JSX.Element {
                 <div>
                     <div className="flex items-center justify-between mb-1.5">
                         <FieldLabel>
-                            {mode === "batch" && batchTotal > 0
+                            {(mode === "batch" || mode === "keyword") &&
+                            batchTotal > 0
                                 ? `Progress — file ${batchCurrent} of ${batchTotal}`
                                 : "Download Progress"}
                         </FieldLabel>
                         <span
-                            className="font-mono text-[10px] tracking-widest uppercase flex items-center"
+                            className="min-w-0 max-w-[58%] text-right font-mono text-[10px] tracking-widest uppercase flex items-center justify-end"
                             style={{ color: statusColor[status] }}
                         >
                             <StatusDot active={isDownloading} />
-                            {statusMsg}
+                            <span className="truncate">{statusMsg}</span>
                         </span>
                     </div>
                     <ProgressBar percent={progress} />
@@ -807,14 +1097,14 @@ export default function App(): React.JSX.Element {
                 </div>
 
                 {/* LOG STRIP */}
-                <RawLogStrip status={status} />
+                <RawLogStrip status={status} lastLine={rawLine} />
 
                 {/* DOWNLOAD BUTTON */}
                 <button
                     disabled={!canDownload}
                     onClick={startDownload}
                     className="
-            w-full h-12 rounded-xl font-display font-bold text-[14px]
+            w-full min-h-12 rounded-xl font-display font-bold text-[13px] sm:text-[14px]
             tracking-widest uppercase transition-all
             disabled:opacity-25 disabled:cursor-not-allowed
             enabled:hover:scale-[1.01] enabled:active:scale-[0.99]
@@ -833,14 +1123,22 @@ export default function App(): React.JSX.Element {
                     {isDownloading ? (
                         <span className="flex items-center justify-center gap-2">
                             <Spinner />
-                            {mode === "batch"
+                            {mode === "batch" || mode === "keyword"
                                 ? batchTotal > 0
                                     ? `Downloading ${batchCurrent}/${batchTotal}…`
-                                    : "Preparing batch queue…"
+                                    : "Preparing queue…"
                                 : "Chunk lanes active…"}
                         </span>
                     ) : mode === "batch" ? (
                         "⚡ Start Batch Download (MP4)"
+                    ) : mode === "keyword" ? (
+                        canKeywordDownload ? (
+                            "⚡ Start Keyword Search & Download (MP4)"
+                        ) : keywordSourceUrl.trim() === "" ? (
+                            "Enter Source URL to Begin"
+                        ) : (
+                            "Enter Keyword to Prepare Search"
+                        )
                     ) : (
                         "⚡ Download via Parallel Chunks"
                     )}
@@ -848,7 +1146,7 @@ export default function App(): React.JSX.Element {
             </main>
 
             {/* ── Footer ── */}
-            <footer className="shrink-0 flex items-center justify-between px-7 py-2 border-t border-[#111]">
+            <footer className="shrink-0 hidden sm:flex items-center justify-between px-7 py-2 border-t border-[#111]">
                 <span className="font-mono text-[9px] uppercase tracking-[0.2em] text-[#2a2a2a]">
                     yt-dlp · ffmpeg · 5× fragment engine
                 </span>
