@@ -1,12 +1,12 @@
 # AGENTS.md — turbo-downloader
 
 ## Log folder
-All Codex logs for this project live in .codex/
-- .codex/CHANGES.md     → rolling changelog
-- .codex/DECISIONS.md   → architectural decisions
-- .codex/REVIEW.md      → items for human review
-- .codex/sessions/      → per-session detail files
-- .codex/plans/         → feature plan files
+All Codex logs for this project live in project-docs/
+- project-docs/CHANGES.md     → rolling changelog
+- project-docs/DECISIONS.md   → architectural decisions
+- project-docs/REVIEW.md      → items for human review
+- project-docs/sessions/      → per-session detail files
+- project-docs/plans/         → feature plan files
 
 ## Idea capture protocol
 Codex must preserve every user feature thought before implementation detail is
@@ -14,12 +14,12 @@ settled.
 
 When the user describes an idea, feature, workflow, product direction, or rough
 plan for this project:
-- Create `.codex/plans/` if it does not exist.
+- Create `project-docs/plans/` if it does not exist.
 - If the idea is not ready for a full feature plan, append it to
-  `.codex/plans/idea-inbox.md` with the date, source message summary,
+  `project-docs/plans/idea-inbox.md` with the date, source message summary,
   known requirements, open questions, and current status.
 - If the idea is ready for implementation, create or update the relevant
-  `.codex/plans/FEATURE-SLUG.md` file before editing application code.
+  `project-docs/plans/FEATURE-SLUG.md` file before editing application code.
 - If the user changes or expands an earlier idea, update the same plan or inbox
   entry instead of relying on conversation memory.
 - Never discard an idea because it is incomplete. Mark unclear parts as open
@@ -57,5 +57,5 @@ Core rules:
 Codex will follow these rules when working on this project:
 - Respect the folder structure described above — never mix frontend and backend code
 - Run the commands listed above after every change to verify nothing broke
-- Log every session to .codex/sessions/ with details about what changed
-- Update .codex/CHANGES.md and .codex/DECISIONS.md as work progresses
+- Log every session to project-docs/ with details about what changed
+- Update project-docs/CHANGES.md and project-docs/DECISIONS.md as work progresses
