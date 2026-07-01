@@ -16,6 +16,35 @@ const MP4_FORMAT_SELECTOR: &str =
 
 const KEYWORD_MIN_RESULTS: u64 = 1;
 
+// ─── Update the yt-dlp engine ─────────────────────────────────────────────────
+// Runs yt-dlp's own self-updater (`yt-dlp -U`). This only works if yt-dlp
+// was installed as the standalone binary (as in this project's setup docs)
+// and if the process has write access to wherever that binary lives. If it
+// was installed with `sudo` to /usr/local/bin, updating from inside the app
+// (running as a normal user) will fail with a permissions error — in that
+// case run `sudo yt-dlp -U` from a terminal instead, or reinstall yt-dlp to
+// a user-writable location such as ~/.local/bin.
+#[tauri::command]
+fn update_yt_dlp() -> Result<String, String> {
+    let output = Command::new("yt-dlp")
+        .arg("-U")
+        .output()
+        .map_err(|e| format!("Could not run yt-dlp: {e}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+
+    if !output.status.success() {
+        return Err(if stderr.is_empty() { stdout } else { stderr });
+    }
+
+    Ok(if stdout.is_empty() {
+        "yt-dlp is already up to date.".to_string()
+    } else {
+        stdout
+    })
+}
+
 // ─── Folder picker ────────────────────────────────────────────────────────────
 #[tauri::command]
 fn open_directory_dialog() -> Result<String, String> {
@@ -36,8 +65,24 @@ fn open_file_dialog() -> Result<String, String> {
     Ok(file.to_string_lossy().to_string())
 }
 
+// Command::new() never goes through a shell, so "~" is never expanded for
+// us — without this, a default save path like "~/Downloads" would be
+// treated by yt-dlp as a literal folder named "~".
+fn expand_tilde(path: &str) -> String {
+    if path == "~" {
+        return std::env::var("HOME").unwrap_or_else(|_| path.to_string());
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = std::env::var("HOME") {
+            return Path::new(&home).join(rest).to_string_lossy().to_string();
+        }
+    }
+    path.to_string()
+}
+
 fn build_output_template(target_dir: &str) -> String {
-    Path::new(target_dir)
+    let expanded = expand_tilde(target_dir);
+    Path::new(&expanded)
         .join("%(title)s.%(ext)s")
         .to_string_lossy()
         .to_string()
@@ -152,20 +197,32 @@ fn spawn_and_stream(app: AppHandle, mut child: std::process::Child) {
     let stdout = child.stdout.take().expect("stdout pipe missing");
     let stderr = child.stderr.take().expect("stderr pipe missing");
 
+    // Drain stderr on its own thread, concurrently with stdout. yt-dlp can
+    // emit a lot of warnings on stderr; if nobody reads that pipe until
+    // child.wait() returns, the OS pipe buffer fills up, yt-dlp blocks on
+    // write(), and child.wait() then never returns — a silent hang.
+    let stderr_handle = std::thread::spawn(move || {
+        BufReader::new(stderr)
+            .lines()
+            .flatten()
+            .collect::<Vec<String>>()
+    });
+
     std::thread::spawn(move || {
         for line in BufReader::new(stdout).lines().flatten() {
             let _ = app.emit("download-progress", &line);
         }
         match child.wait() {
-            Ok(s) if s.success() => { let _ = app.emit("download-complete", "success"); }
-            Ok(_) => {
-                let err: String = BufReader::new(stderr)
-                    .lines().flatten()
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let _ = app.emit("download-error", err.trim().to_string());
+            Ok(s) if s.success() => {
+                let _ = app.emit("download-complete", "success");
             }
-            Err(e) => { let _ = app.emit("download-error", e.to_string()); }
+            Ok(_) => {
+                let err_lines = stderr_handle.join().unwrap_or_default();
+                let _ = app.emit("download-error", err_lines.join("\n").trim().to_string());
+            }
+            Err(e) => {
+                let _ = app.emit("download-error", e.to_string());
+            }
         }
     });
 }
@@ -185,6 +242,12 @@ fn start_turbo_download(
         "-f",  &format_id,          // height-based selector, works on any site
         "-o",  &out_template,
         "--merge-output-format", "mp4",
+        // --merge-output-format only applies when yt-dlp merges two separate
+        // streams (video+audio). Sites that serve a single HLS stream (no
+        // merge happens) would otherwise be left in their native .ts
+        // container. --remux-video does a lossless (stream-copy) container
+        // remux to mp4 in that case too.
+        "--remux-video", "mp4",
         "--concurrent-fragments","5",
         "--http-chunk-size",     "10485760",
         "--newline",
@@ -228,6 +291,7 @@ fn start_keyword_download(
         "-f", &format_selector,
         "-o", &out_template,
         "--merge-output-format", "mp4",
+        "--remux-video", "mp4",
         "--concurrent-fragments", "5",
         "--http-chunk-size", "10485760",
         "--newline",
@@ -257,10 +321,20 @@ fn start_keyword_download(
     Ok(format!("Keyword search started — searching within source for '{}' (up to {} result(s))", query, validated_count))
 }
 
-// Escape regex special characters to prevent injection and ensure literal matching
+// Escape regex special characters to prevent injection and ensure literal matching.
+// `str::replace` takes a `&str` replacement, not a closure, so a pattern-matching
+// closure can't produce a per-character escaped replacement in one call — we walk
+// the string manually instead.
 fn escape_regex(text: &str) -> String {
-    // Escape all regex special characters: . * + ? ^ $ ( ) [ ] { } | \
-    text.replace(|c: char| ".+?^$()[]{}\\|".contains(c), |c| format!("\\{}", c))
+    const SPECIAL: &str = ".*+?^$()[]{}|\\";
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars() {
+        if SPECIAL.contains(c) {
+            escaped.push('\\');
+        }
+        escaped.push(c);
+    }
+    escaped
 }
 
 // ─── Batch download ───────────────────────────────────────────────────────────
@@ -295,6 +369,7 @@ fn start_batch_download(
         "-f",                    &format_selector,
         "-o",                    &out_template,
         "--merge-output-format", "mp4",
+        "--remux-video",         "mp4",
         "--concurrent-fragments","5",
         "--http-chunk-size",     "10485760",
         "--newline",
@@ -329,6 +404,7 @@ pub fn run() {
             start_turbo_download,
             start_keyword_download,
             start_batch_download,
+            update_yt_dlp,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running Tauri application");

@@ -47,9 +47,17 @@ function StatusDot({ active }: { active: boolean }) {
     );
 }
 
-function FieldLabel({ children }: { children: React.ReactNode }) {
+function FieldLabel({
+    children,
+    className = "",
+}: {
+    children: React.ReactNode;
+    className?: string;
+}) {
     return (
-        <span className="block text-[10px] font-mono font-medium tracking-[0.2em] uppercase text-[#555] mb-1.5">
+        <span
+            className={`block text-[10px] font-mono font-medium tracking-[0.2em] uppercase text-[#555] mb-1.5 ${className}`}
+        >
             {children}
         </span>
     );
@@ -83,6 +91,62 @@ function Spinner() {
                 d="M4 12a8 8 0 018-8v8H4z"
             />
         </svg>
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Toast — readable, word-wrapping, dismissible notification.
+//
+// The compact status pill in the progress block truncates to a single line,
+// which is fine for routine status text but hides anything actionable (like
+// a yt-dlp update warning) unless the window is stretched wide. The toast
+// gives long/important messages a proper place to be fully readable.
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ToastMessage {
+    id: number;
+    text: string;
+    kind: "error" | "success";
+}
+
+function Toast({
+    toast,
+    onDismiss,
+}: {
+    toast: ToastMessage | null;
+    onDismiss: () => void;
+}) {
+    if (!toast) return null;
+    const isError = toast.kind === "error";
+
+    return (
+        <div
+            key={toast.id}
+            role="alert"
+            className={`slide-in absolute bottom-4 left-4 right-4 sm:left-auto sm:right-4 sm:w-[380px] z-50 rounded-xl border px-4 py-3 shadow-2xl backdrop-blur-sm ${
+                isError
+                    ? "bg-[#1a0505]/95 border-[#ff4455]/40"
+                    : "bg-[#051a10]/95 border-[#00ff99]/40"
+            }`}
+        >
+            <div className="flex items-start gap-2.5">
+                <span
+                    className={`text-[13px] shrink-0 mt-0.5 ${isError ? "text-[#ff4455]" : "text-[#00ff99]"}`}
+                >
+                    {isError ? "⚠" : "✓"}
+                </span>
+                <p className="flex-1 min-w-0 text-[11px] font-mono leading-relaxed text-[#ccc] break-words whitespace-pre-wrap">
+                    {toast.text}
+                </p>
+                <button
+                    onClick={onDismiss}
+                    className="shrink-0 text-[#555] hover:text-[#aaa] text-[13px] leading-none transition-colors"
+                    aria-label="Dismiss notification"
+                >
+                    ✕
+                </button>
+            </div>
+        </div>
     );
 }
 
@@ -219,20 +283,13 @@ function parseProgressLine(raw: string): ParsedLine {
 // Raw log strip
 // ─────────────────────────────────────────────────────────────────────────────
 
-function RawLogStrip({ status }: { status: AppStatus }) {
-    const [lastLine, setLastLine] = useState<string>("");
-
-    useEffect(() => {
-        let unlisten: (() => void) | undefined;
-        listen<string>("download-progress", (ev) => {
-            const s = ev.payload.replace(/\x1b\[[0-9;]*m/g, "").trim();
-            if (s) setLastLine(s);
-        }).then((u) => {
-            unlisten = u;
-        });
-        return () => unlisten?.();
-    }, []);
-
+function RawLogStrip({
+    status,
+    lastLine,
+}: {
+    status: AppStatus;
+    lastLine: string;
+}) {
     const idle =
         status === "idle" || status === "fetching" || status === "ready";
 
@@ -288,6 +345,9 @@ export default function App(): React.JSX.Element {
         eta: "--",
         size: "--",
     });
+    const [rawLine, setRawLine] = useState<string>("");
+    const [toast, setToast] = useState<ToastMessage | null>(null);
+    const [updatingEngine, setUpdatingEngine] = useState<boolean>(false);
 
     // ── Refs ─────────────────────────────────────────────────────────────────────
     const lastFetchedUrl = useRef<string>("");
@@ -297,6 +357,23 @@ export default function App(): React.JSX.Element {
     const fetchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
     // Generation counter — lets us discard results from superseded fetches
     const fetchGen = useRef<number>(0);
+    const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Show a toast, replacing any currently-visible one, auto-dismissing
+    // after 9s unless the user closes it first.
+    const pushToast = useCallback(
+        (text: string, kind: ToastMessage["kind"] = "error") => {
+            setToast({ id: Date.now(), text, kind });
+            if (toastTimer.current) clearTimeout(toastTimer.current);
+            toastTimer.current = setTimeout(() => setToast(null), 9000);
+        },
+        [],
+    );
+
+    const dismissToast = useCallback(() => {
+        if (toastTimer.current) clearTimeout(toastTimer.current);
+        setToast(null);
+    }, []);
 
     // ── Reset shared download state when switching modes ────────────────────────
     const handleModeChange = useCallback((m: AppMode) => {
@@ -383,6 +460,11 @@ export default function App(): React.JSX.Element {
             // Per-file progress
             subs.push(
                 await listen<string>("download-progress", (ev) => {
+                    const cleanLine = ev.payload
+                        .replace(/\x1b\[[0-9;]*m/g, "")
+                        .trim();
+                    if (cleanLine) setRawLine(cleanLine);
+
                     const p = parseProgressLine(ev.payload);
                     if (p.percent !== undefined) setProgress(p.percent);
                     if (p.speed !== undefined)
@@ -420,6 +502,7 @@ export default function App(): React.JSX.Element {
                 await listen<string>("download-error", (ev) => {
                     setStatus("error");
                     setStatusMsg(`Error: ${ev.payload}`);
+                    pushToast(ev.payload, "error");
                 }),
             );
         };
@@ -459,8 +542,9 @@ export default function App(): React.JSX.Element {
             if (myGen !== fetchGen.current) return;
             setStatus("error");
             setStatusMsg(`Fetch failed: ${String(err)}`);
+            pushToast(`Fetch failed: ${String(err)}`, "error");
         }
-    }, []);
+    }, [pushToast]);
 
     // ── Choose save folder ───────────────────────────────────────────────────────
     const chooseSaveDir = useCallback(async () => {
@@ -519,6 +603,7 @@ export default function App(): React.JSX.Element {
             } catch (err) {
                 setStatus("error");
                 setStatusMsg(`Launch failed: ${String(err)}`);
+                pushToast(`Launch failed: ${String(err)}`, "error");
             }
         } else if (mode === "batch") {
             setStatusMsg("Reading batch file — starting queue…");
@@ -532,6 +617,7 @@ export default function App(): React.JSX.Element {
             } catch (err) {
                 setStatus("error");
                 setStatusMsg(`Batch failed: ${String(err)}`);
+                pushToast(`Batch failed: ${String(err)}`, "error");
             }
         } else if (mode === "keyword") {
             setStatusMsg("Searching and queuing results…");
@@ -547,6 +633,7 @@ export default function App(): React.JSX.Element {
             } catch (err) {
                 setStatus("error");
                 setStatusMsg(`Keyword search failed: ${String(err)}`);
+                pushToast(`Keyword search failed: ${String(err)}`, "error");
             }
         }
     }, [
@@ -559,7 +646,23 @@ export default function App(): React.JSX.Element {
         keywordQuery,
         keywordLimit,
         keywordResolution,
+        pushToast,
     ]);
+
+    const updateEngine = useCallback(async () => {
+        setUpdatingEngine(true);
+        try {
+            const result = await invoke<string>("update_yt_dlp");
+            pushToast(result, "success");
+        } catch (err) {
+            pushToast(
+                `yt-dlp update failed: ${String(err)}\n\nIf this is a permissions error, either run "sudo yt-dlp -U" in a terminal, or reinstall yt-dlp to a user-writable location like ~/.local/bin.`,
+                "error",
+            );
+        } finally {
+            setUpdatingEngine(false);
+        }
+    }, [pushToast]);
 
     // ── Derived UI helpers ───────────────────────────────────────────────────────
     const isDownloading = status === "downloading";
@@ -583,6 +686,7 @@ export default function App(): React.JSX.Element {
     const canKeywordDownload =
         mode === "keyword" &&
         !isDownloading &&
+        keywordSourceUrl.trim() !== "" &&
         keywordQuery.trim() !== "" &&
         (status === "ready" || status === "done" || status === "error");
 
@@ -617,6 +721,9 @@ export default function App(): React.JSX.Element {
                 }}
             />
 
+            {/* Error / success notifications — replaces the old cramped truncated status pill for anything that actually needs reading in full */}
+            <Toast toast={toast} onDismiss={dismissToast} />
+
             {/* ── Header ── */}
             <header className="flex items-center justify-between gap-4 px-5 sm:px-7 pt-4 sm:pt-5 pb-0 shrink-0">
                 <div>
@@ -631,17 +738,36 @@ export default function App(): React.JSX.Element {
                     </p>
                 </div>
 
-                {/* Clipboard badge — only relevant in single mode */}
-                {mode === "single" && (
-                    <div className="hidden sm:flex items-center gap-1.5 bg-[#111] border border-[#1e1e1e] rounded-full px-3 py-1 min-w-0">
-                        <StatusDot
-                            active={clipMsg !== "Auto-clipboard active"}
-                        />
-                        <span className="font-mono text-[9px] tracking-wider uppercase text-[#555]">
-                            {truncate(clipMsg, 30)}
+                <div className="flex items-center gap-2">
+                    {/* Clipboard badge — only relevant in single mode */}
+                    {mode === "single" && (
+                        <div className="hidden sm:flex items-center gap-1.5 bg-[#111] border border-[#1e1e1e] rounded-full px-3 py-1 min-w-0">
+                            <StatusDot
+                                active={clipMsg !== "Auto-clipboard active"}
+                            />
+                            <span className="font-mono text-[9px] tracking-wider uppercase text-[#555]">
+                                {truncate(clipMsg, 30)}
+                            </span>
+                        </div>
+                    )}
+
+                    {/* Update Engine — runs `yt-dlp -U` and reports the result via toast */}
+                    <button
+                        onClick={updateEngine}
+                        disabled={updatingEngine}
+                        title="Update yt-dlp"
+                        className="flex items-center gap-1.5 bg-[#111] border border-[#1e1e1e] hover:border-[#333] rounded-full px-3 py-1 transition-colors disabled:opacity-50"
+                    >
+                        <span
+                            className={`text-[#888] text-[10px] ${updatingEngine ? "animate-spin" : ""}`}
+                        >
+                            ⟳
                         </span>
-                    </div>
-                )}
+                        <span className="font-mono text-[9px] tracking-wider uppercase text-[#555]">
+                            {updatingEngine ? "Updating…" : "Update Engine"}
+                        </span>
+                    </button>
+                </div>
             </header>
 
             {/* Divider */}
@@ -971,7 +1097,7 @@ export default function App(): React.JSX.Element {
                 </div>
 
                 {/* LOG STRIP */}
-                <RawLogStrip status={status} />
+                <RawLogStrip status={status} lastLine={rawLine} />
 
                 {/* DOWNLOAD BUTTON */}
                 <button
@@ -1008,6 +1134,8 @@ export default function App(): React.JSX.Element {
                     ) : mode === "keyword" ? (
                         canKeywordDownload ? (
                             "⚡ Start Keyword Search & Download (MP4)"
+                        ) : keywordSourceUrl.trim() === "" ? (
+                            "Enter Source URL to Begin"
                         ) : (
                             "Enter Keyword to Prepare Search"
                         )
