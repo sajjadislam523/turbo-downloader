@@ -337,8 +337,48 @@ fn escape_regex(text: &str) -> String {
     escaped
 }
 
+// ─── Stream a single child's output and block until it exits ────────────────
+// Used by the batch loop, which needs to know exactly when one file's yt-dlp
+// process finished before moving on to emit the "next file starting" event.
+// Same stderr-deadlock protection as spawn_and_stream: drain stderr on its
+// own thread concurrently with stdout.
+fn stream_and_wait(app: &AppHandle, mut child: std::process::Child) -> Result<(), String> {
+    let stdout = child.stdout.take().ok_or("stdout pipe missing")?;
+    let stderr = child.stderr.take().ok_or("stderr pipe missing")?;
+
+    let stderr_handle = std::thread::spawn(move || {
+        BufReader::new(stderr)
+            .lines()
+            .flatten()
+            .collect::<Vec<String>>()
+    });
+
+    for line in BufReader::new(stdout).lines().flatten() {
+        let _ = app.emit("download-progress", &line);
+    }
+
+    match child.wait() {
+        Ok(s) if s.success() => Ok(()),
+        Ok(_) => {
+            let err_lines = stderr_handle.join().unwrap_or_default();
+            Err(err_lines.join("\n").trim().to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 // ─── Batch download ───────────────────────────────────────────────────────────
 // `max_height`  →  0 means "best available", any other value caps the height.
+//
+// Previously this ran ONE yt-dlp process with --batch-file for the whole
+// list. That process never prints "Downloading item X of Y" for a plain URL
+// list (that message only appears for real playlists/channels, where yt-dlp
+// knows the total in advance) — so the frontend's X/Y file counter had no
+// signal to update on and stayed stuck at 0/N for the entire run.
+//
+// Now we launch yt-dlp once per URL, sequentially, and emit "batch-item-start"
+// ourselves right before each one — a signal the frontend can always rely on,
+// regardless of what any given site's extractor happens to print.
 #[tauri::command]
 fn start_batch_download(
     app: AppHandle,
@@ -349,48 +389,77 @@ fn start_batch_download(
     let content = std::fs::read_to_string(&file_path)
         .map_err(|e| format!("Cannot read batch file: {e}"))?;
 
-    let url_count = content.lines().filter(|l| {
-        let t = l.trim();
-        !t.is_empty() && !t.starts_with('#')
-            && (t.starts_with("http://") || t.starts_with("https://"))
-    }).count();
+    let urls: Vec<String> = content
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|t| {
+            !t.is_empty()
+                && !t.starts_with('#')
+                && (t.starts_with("http://") || t.starts_with("https://"))
+        })
+        .collect();
 
-    if url_count == 0 {
+    if urls.is_empty() {
         return Err("The file contains no valid URLs (one per line).".to_string());
     }
 
-    let _ = app.emit("batch-total", url_count);
+    let total = urls.len();
+    let _ = app.emit("batch-total", total);
+
     let out_template = build_output_template(&target_dir);
     let format_selector = build_height_selector(max_height);
 
-    let mut cmd = Command::new("yt-dlp");
-    cmd.args([
-        "--batch-file",          &file_path,
-        "-f",                    &format_selector,
-        "-o",                    &out_template,
-        "--merge-output-format", "mp4",
-        "--remux-video",         "mp4",
-        "--concurrent-fragments","5",
-        "--http-chunk-size",     "10485760",
-        "--newline",
-        "--no-playlist",
-        "--no-abort-on-error",
-        // Wait 4–8 seconds between each video in the batch.
-        // This prevents the site from rate-limiting / dropping the SSL
-        // handshake on rapid back-to-back connections.
-        "--sleep-interval",      "4",
-        "--max-sleep-interval",  "8",
-        // Also add a small delay between individual fragment requests
-        // to avoid hammering the CDN on each file.
-        "--sleep-requests",      "1",
+    std::thread::spawn(move || {
+        let mut failures: Vec<String> = Vec::new();
 
-    ]);
-    cmd.args(RETRY_ARGS);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        for (index, url) in urls.iter().enumerate() {
+            let _ = app.emit("batch-item-start", (index + 1) as u64);
 
-    let child = cmd.spawn().map_err(|e| format!("Failed to launch yt-dlp: {e}"))?;
-    spawn_and_stream(app, child);
-    Ok(format!("Batch started — {url_count} URLs queued"))
+            let mut cmd = Command::new("yt-dlp");
+            cmd.args([
+                "-f", &format_selector,
+                "-o", &out_template,
+                "--merge-output-format", "mp4",
+                "--remux-video", "mp4",
+                "--concurrent-fragments", "5",
+                "--http-chunk-size", "10485760",
+                "--newline",
+                "--no-playlist",
+                // Small delay between individual fragment requests, to avoid
+                // hammering the CDN within a single file's download.
+                "--sleep-requests", "1",
+            ]);
+            cmd.args(RETRY_ARGS);
+            cmd.arg(url);
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+            match cmd.spawn() {
+                Ok(child) => {
+                    if let Err(e) = stream_and_wait(&app, child) {
+                        failures.push(format!("{url} — {e}"));
+                    }
+                }
+                Err(e) => failures.push(format!("{url} — failed to launch yt-dlp: {e}")),
+            }
+
+            // Wait 4–8s between files (varies a little instead of a fixed
+            // cadence) — same rate-limiting protection the old
+            // --sleep-interval/--max-sleep-interval flags gave, just applied
+            // by us now that each file is its own process.
+            if index + 1 < total {
+                let delay_secs = 4 + ((index as u64) % 5);
+                std::thread::sleep(std::time::Duration::from_secs(delay_secs));
+            }
+        }
+
+        if failures.is_empty() {
+            let _ = app.emit("download-complete", "success");
+        } else {
+            let _ = app.emit("download-error", failures.join("\n"));
+        }
+    });
+
+    Ok(format!("Batch started — {total} URLs queued"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

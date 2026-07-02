@@ -490,6 +490,21 @@ export default function App(): React.JSX.Element {
                 }),
             );
 
+            // Batch mode: Rust launches yt-dlp once per URL and emits this
+            // right before each one starts. Batch-file downloads never print
+            // a "Downloading item X of Y" line for yt-dlp to parse (that only
+            // happens for real playlists), so this is the reliable source of
+            // truth for the X/Y counter in batch mode — the parseProgressLine
+            // batchItem match above still covers keyword mode, where the
+            // source really is a playlist/channel and yt-dlp does print it.
+            subs.push(
+                await listen<number>("batch-item-start", (ev) => {
+                    setBatchCurrent(ev.payload);
+                    setProgress(0);
+                    setMetrics({ speed: "--", eta: "--", size: "--" });
+                }),
+            );
+
             subs.push(
                 await listen("download-complete", () => {
                     setStatus("done");
