@@ -108,6 +108,174 @@ fn validate_keyword_result_count(result_count: u64) -> Result<u64, String> {
     Ok(result_count)
 }
 
+fn validate_http_url(url: &str) -> Result<(), String> {
+    let trimmed = url.trim();
+    if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
+        return Err("URL must start with http:// or https://".to_string());
+    }
+    if trimmed.len() < 12 {
+        return Err("URL looks too short to be valid.".to_string());
+    }
+    Ok(())
+}
+
+fn build_match_filter(query: &str) -> String {
+    let escaped = escape_regex(query.trim());
+    format!("title ~= '{escaped}'")
+}
+
+const KEYWORD_SCAN_LIMIT: u64 = 200;
+
+fn extract_source_info(json: &serde_json::Value) -> (String, String, Option<u64>) {
+    if let Some(entries) = json.as_array() {
+        let first = entries.first().cloned().unwrap_or_else(|| json.clone());
+        let title = first["playlist_title"]
+            .as_str()
+            .or_else(|| first["title"].as_str())
+            .or_else(|| first["channel"].as_str())
+            .unwrap_or("Unknown source")
+            .to_string();
+        let count = first["playlist_count"]
+            .as_u64()
+            .or_else(|| Some(entries.len() as u64));
+        return (title, "playlist".to_string(), count);
+    }
+
+    let title = json["playlist_title"]
+        .as_str()
+        .or_else(|| json["title"].as_str())
+        .or_else(|| json["channel"].as_str())
+        .unwrap_or("Unknown source")
+        .to_string();
+
+    let source_type = if json["playlist_count"].as_u64().unwrap_or(0) > 1
+        || json["_type"].as_str() == Some("playlist")
+    {
+        "playlist"
+    } else {
+        "video"
+    };
+
+    let count = json["playlist_count"].as_u64().or(Some(1));
+    (title, source_type.to_string(), count)
+}
+
+fn validate_keyword_source_blocking(
+    source_url: String,
+    query: String,
+    result_count: u64,
+) -> Result<serde_json::Value, String> {
+    validate_http_url(&source_url)?;
+    if query.trim().is_empty() {
+        return Err("Keyword cannot be empty.".to_string());
+    }
+    let validated_count = validate_keyword_result_count(result_count)?;
+
+    // Probe: can yt-dlp read this URL at all?
+    let probe = Command::new("yt-dlp")
+        .args([
+            "-j",
+            "--flat-playlist",
+            "--yes-playlist",
+            "--playlist-end",
+            "1",
+            "--no-warnings",
+        ])
+        .args(RETRY_ARGS)
+        .arg(source_url.trim())
+        .output()
+        .map_err(|e| format!("yt-dlp not found – is it installed? ({e})"))?;
+
+    if !probe.status.success() {
+        let err = String::from_utf8_lossy(&probe.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            "Could not access this URL. Use a video, playlist, or channel page supported by yt-dlp.".to_string()
+        } else {
+            err
+        });
+    }
+
+    let probe_json: serde_json::Value = serde_json::from_slice(&probe.stdout)
+        .map_err(|e| format!("Could not parse source metadata: {e}"))?;
+
+    let (source_title, source_type, entry_count) = extract_source_info(&probe_json);
+
+    // Simulate matching titles without downloading.
+    let match_filter = build_match_filter(&query);
+    let scan_limit = KEYWORD_SCAN_LIMIT.to_string();
+    let preview_limit = validated_count.min(KEYWORD_SCAN_LIMIT).to_string();
+
+    let sim = Command::new("yt-dlp")
+        .args([
+            "--flat-playlist",
+            "--yes-playlist",
+            "--simulate",
+            "--no-warnings",
+            "--print",
+            "%(title)s",
+            "--match-filters",
+            &match_filter,
+            "--max-downloads",
+            &preview_limit,
+            "--playlist-end",
+            &scan_limit,
+        ])
+        .args(RETRY_ARGS)
+        .arg(source_url.trim())
+        .output()
+        .map_err(|e| format!("Could not run keyword validation: {e}"))?;
+
+    if !sim.status.success() {
+        let err = String::from_utf8_lossy(&sim.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            "Keyword validation failed for this URL.".to_string()
+        } else {
+            err
+        });
+    }
+
+    let titles: Vec<String> = String::from_utf8_lossy(&sim.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect();
+
+    let match_count = titles.len() as u64;
+    let can_download = match_count > 0;
+
+    let message = if !can_download {
+        format!(
+            "No videos matching \"{}\" found at this URL. Use a channel or playlist page, or try a different keyword.",
+            query.trim()
+        )
+    } else if source_type == "video" {
+        format!(
+            "Single video matches \"{}\" — ready to download.",
+            query.trim()
+        )
+    } else {
+        format!(
+            "Found {} match(es) for \"{}\" (scanned up to {} entries). Up to {} will be downloaded.",
+            match_count,
+            query.trim(),
+            KEYWORD_SCAN_LIMIT,
+            validated_count
+        )
+    };
+
+    Ok(serde_json::json!({
+        "valid": true,
+        "source_title": source_title,
+        "source_type": source_type,
+        "entry_count": entry_count,
+        "match_count": match_count,
+        "sample_titles": titles.iter().take(3).collect::<Vec<_>>(),
+        "message": message,
+        "can_download": can_download,
+    }))
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // fetch_video_meta  — async so the UI never freezes.
 //
@@ -262,6 +430,20 @@ fn start_turbo_download(
     Ok("Download started".to_string())
 }
 
+// ─── Keyword source validation (pre-flight check) ───────────────────────────
+#[tauri::command]
+async fn validate_keyword_source(
+    source_url: String,
+    query: String,
+    result_count: u64,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        validate_keyword_source_blocking(source_url, query, result_count)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 // ─── Keyword search download ─────────────────────────────────────────────────
 #[tauri::command]
 fn start_keyword_download(
@@ -281,10 +463,25 @@ fn start_keyword_download(
     }
 
     let validated_count = validate_keyword_result_count(result_count)?;
+
+    // Reject downloads when the pre-flight check finds zero matches.
+    let validation =
+        validate_keyword_source_blocking(source_url.clone(), query.clone(), validated_count)?;
+    let can_download = validation["can_download"].as_bool().unwrap_or(false);
+    if !can_download {
+        return Err(validation["message"]
+            .as_str()
+            .unwrap_or("No matching videos found.")
+            .to_string());
+    }
+
+    let match_count = validation["match_count"].as_u64().unwrap_or(validated_count);
+    let download_total = validated_count.min(match_count);
     let out_template = build_output_template(&target_dir);
     let format_selector = build_height_selector(max_height);
+    let match_filter = build_match_filter(&query);
 
-    let _ = app.emit("batch-total", validated_count);
+    let _ = app.emit("batch-total", download_total);
 
     let mut cmd = Command::new("yt-dlp");
     cmd.args([
@@ -295,30 +492,26 @@ fn start_keyword_download(
         "--concurrent-fragments", "5",
         "--http-chunk-size", "10485760",
         "--newline",
+        // Required for channel/playlist URLs — without this yt-dlp only
+        // processes the first video and keyword filtering silently fails.
+        "--yes-playlist",
         "--sleep-interval", "4",
         "--max-sleep-interval", "8",
         "--sleep-requests", "1",
         "--ignore-errors",
+        "--match-filters", &match_filter,
+        "--max-downloads", &validated_count.to_string(),
     ]);
-
-    // Add match filter to search for keyword in video title
-    // Properly escape regex special characters to prevent injection and unexpected behavior
-    let escaped_query = escape_regex(&query);
-    let match_filter = format!("title ~= '{}'", escaped_query);
-    cmd.args(["--match-filters", &match_filter]);
-
-    // Limit results if specified
-    if result_count > 0 && result_count < u64::MAX {
-        cmd.args(["--max-downloads", &result_count.to_string()]);
-    }
-
     cmd.args(RETRY_ARGS);
-    cmd.arg(&source_url);
+    cmd.arg(source_url.trim());
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let child = cmd.spawn().map_err(|e| format!("Failed to launch yt-dlp: {e}"))?;
     spawn_and_stream(app, child);
-    Ok(format!("Keyword search started — searching within source for '{}' (up to {} result(s))", query, validated_count))
+    Ok(format!(
+        "Keyword download started — up to {} match(es) for '{}'",
+        download_total, query.trim()
+    ))
 }
 
 // Escape regex special characters to prevent injection and ensure literal matching.
@@ -470,6 +663,7 @@ pub fn run() {
             open_directory_dialog,
             open_file_dialog,
             fetch_video_meta,
+            validate_keyword_source,
             start_turbo_download,
             start_keyword_download,
             start_batch_download,
