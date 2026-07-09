@@ -35,3 +35,19 @@ are not lost.
 - None for the command correction.
 
 **Status:** Converted into project instruction update.
+
+## 2026-07-10 — Keyword Search Baseurl Validation Issue
+
+**Source summary:** User reports encountering errors related to baseurl validation when attempting to use the keyword download feature. The error occurs during the validation phase before downloading begins.
+
+**Known requirements:**
+- Investigate the URL validation logic in the keyword search feature
+- Fix any issues causing false validation failures
+- Improve error messaging to be more helpful to users
+- Ensure valid URLs (including short ones) work correctly
+
+**Open questions:**
+- What specific error messages is the user seeing?
+- Are there particular URL formats that are failing?
+
+**Status:** RESOLVED - See `keyword-search-baseurl-fix.md` plan for details

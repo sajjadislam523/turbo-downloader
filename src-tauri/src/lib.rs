@@ -113,8 +113,9 @@ fn validate_http_url(url: &str) -> Result<(), String> {
     if !trimmed.starts_with("http://") && !trimmed.starts_with("https://") {
         return Err("URL must start with http:// or https://".to_string());
     }
-    if trimmed.len() < 12 {
-        return Err("URL looks too short to be valid.".to_string());
+    // Must have at least "http://x" or "https://x" (8 characters minimum)
+    if trimmed.len() < 8 {
+        return Err("URL is too short. Please provide a valid URL including http:// or https:// prefix.".to_string());
     }
     Ok(())
 }
@@ -361,9 +362,9 @@ fn fetch_meta_blocking(url: String) -> Result<serde_json::Value, String> {
 }
 
 // ─── Stream yt-dlp stdout back to the frontend as events ─────────────────────
-fn spawn_and_stream(app: AppHandle, mut child: std::process::Child) {
-    let stdout = child.stdout.take().expect("stdout pipe missing");
-    let stderr = child.stderr.take().expect("stderr pipe missing");
+fn spawn_and_stream(app: AppHandle, mut child: std::process::Child) -> Result<(), String> {
+    let stdout = child.stdout.take().ok_or("stdout pipe missing")?;
+    let stderr = child.stderr.take().ok_or("stderr pipe missing")?;
 
     // Drain stderr on its own thread, concurrently with stdout. yt-dlp can
     // emit a lot of warnings on stderr; if nobody reads that pipe until
@@ -393,6 +394,7 @@ fn spawn_and_stream(app: AppHandle, mut child: std::process::Child) {
             }
         }
     });
+    Ok(())
 }
 
 // ─── Single-URL download ──────────────────────────────────────────────────────
@@ -426,7 +428,7 @@ fn start_turbo_download(
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let child = cmd.spawn().map_err(|e| format!("Failed to launch yt-dlp: {e}"))?;
-    spawn_and_stream(app, child);
+    spawn_and_stream(app, child)?;
     Ok("Download started".to_string())
 }
 
@@ -507,7 +509,7 @@ fn start_keyword_download(
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let child = cmd.spawn().map_err(|e| format!("Failed to launch yt-dlp: {e}"))?;
-    spawn_and_stream(app, child);
+    spawn_and_stream(app, child)?;
     Ok(format!(
         "Keyword download started — up to {} match(es) for '{}'",
         download_total, query.trim()
