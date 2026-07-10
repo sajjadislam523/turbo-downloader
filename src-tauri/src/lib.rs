@@ -1,8 +1,14 @@
 use std::process::{Command, Stdio};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 use rfd::FileDialog;
+
+// Shared state so the frontend can cancel an active download by PID.
+struct DownloadState {
+    running_pid: Arc<Mutex<Option<u32>>>,
+}
 
 const RETRY_ARGS: &[&str] = &[
     "--retries",          "15",
@@ -128,20 +134,6 @@ fn build_match_filter(query: &str) -> String {
 const KEYWORD_SCAN_LIMIT: u64 = 200;
 
 fn extract_source_info(json: &serde_json::Value) -> (String, String, Option<u64>) {
-    if let Some(entries) = json.as_array() {
-        let first = entries.first().cloned().unwrap_or_else(|| json.clone());
-        let title = first["playlist_title"]
-            .as_str()
-            .or_else(|| first["title"].as_str())
-            .or_else(|| first["channel"].as_str())
-            .unwrap_or("Unknown source")
-            .to_string();
-        let count = first["playlist_count"]
-            .as_u64()
-            .or_else(|| Some(entries.len() as u64));
-        return (title, "playlist".to_string(), count);
-    }
-
     let title = json["playlist_title"]
         .as_str()
         .or_else(|| json["title"].as_str())
@@ -362,7 +354,11 @@ fn fetch_meta_blocking(url: String) -> Result<serde_json::Value, String> {
 }
 
 // ─── Stream yt-dlp stdout back to the frontend as events ─────────────────────
-fn spawn_and_stream(app: AppHandle, mut child: std::process::Child) -> Result<(), String> {
+fn spawn_and_stream(
+    app: AppHandle,
+    mut child: std::process::Child,
+    pid_guard: Arc<Mutex<Option<u32>>>,
+) -> Result<(), String> {
     let stdout = child.stdout.take().ok_or("stdout pipe missing")?;
     let stderr = child.stderr.take().ok_or("stderr pipe missing")?;
 
@@ -393,6 +389,9 @@ fn spawn_and_stream(app: AppHandle, mut child: std::process::Child) -> Result<()
                 let _ = app.emit("download-error", e.to_string());
             }
         }
+        // Clear the PID — the process has exited (or was killed).
+        let mut guard = pid_guard.lock().unwrap();
+        *guard = None;
     });
     Ok(())
 }
@@ -401,6 +400,7 @@ fn spawn_and_stream(app: AppHandle, mut child: std::process::Child) -> Result<()
 #[tauri::command]
 fn start_turbo_download(
     app: AppHandle,
+    state: tauri::State<'_, DownloadState>,
     url: String,
     format_id: String,   // actually a selector string now, not a numeric ID
     target_dir: String,
@@ -428,7 +428,13 @@ fn start_turbo_download(
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let child = cmd.spawn().map_err(|e| format!("Failed to launch yt-dlp: {e}"))?;
-    spawn_and_stream(app, child)?;
+    let pid = child.id();
+    {
+        let mut guard = state.running_pid.lock().unwrap();
+        *guard = Some(pid);
+    }
+    let pid_guard = state.running_pid.clone();
+    spawn_and_stream(app, child, pid_guard)?;
     Ok("Download started".to_string())
 }
 
@@ -450,15 +456,14 @@ async fn validate_keyword_source(
 #[tauri::command]
 fn start_keyword_download(
     app: AppHandle,
+    state: tauri::State<'_, DownloadState>,
     source_url: String,
     query: String,
     target_dir: String,
     max_height: u64,
     result_count: u64,
 ) -> Result<String, String> {
-    if source_url.trim().is_empty() {
-        return Err("Source URL is required for keyword search.".to_string());
-    }
+    validate_http_url(&source_url)?;
 
     if query.trim().is_empty() {
         return Err("Search query cannot be empty.".to_string());
@@ -466,19 +471,9 @@ fn start_keyword_download(
 
     let validated_count = validate_keyword_result_count(result_count)?;
 
-    // Reject downloads when the pre-flight check finds zero matches.
-    let validation =
-        validate_keyword_source_blocking(source_url.clone(), query.clone(), validated_count)?;
-    let can_download = validation["can_download"].as_bool().unwrap_or(false);
-    if !can_download {
-        return Err(validation["message"]
-            .as_str()
-            .unwrap_or("No matching videos found.")
-            .to_string());
-    }
-
-    let match_count = validation["match_count"].as_u64().unwrap_or(validated_count);
-    let download_total = validated_count.min(match_count);
+    // The frontend already ran the full pre-flight validation; skip the
+    // expensive yt-dlp probes here and just validate our inputs.
+    let download_total = validated_count;
     let out_template = build_output_template(&target_dir);
     let format_selector = build_height_selector(max_height);
     let match_filter = build_match_filter(&query);
@@ -509,7 +504,13 @@ fn start_keyword_download(
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let child = cmd.spawn().map_err(|e| format!("Failed to launch yt-dlp: {e}"))?;
-    spawn_and_stream(app, child)?;
+    let pid = child.id();
+    {
+        let mut guard = state.running_pid.lock().unwrap();
+        *guard = Some(pid);
+    }
+    let pid_guard = state.running_pid.clone();
+    spawn_and_stream(app, child, pid_guard)?;
     Ok(format!(
         "Keyword download started — up to {} match(es) for '{}'",
         download_total, query.trim()
@@ -537,7 +538,11 @@ fn escape_regex(text: &str) -> String {
 // process finished before moving on to emit the "next file starting" event.
 // Same stderr-deadlock protection as spawn_and_stream: drain stderr on its
 // own thread concurrently with stdout.
-fn stream_and_wait(app: &AppHandle, mut child: std::process::Child) -> Result<(), String> {
+fn stream_and_wait(
+    app: &AppHandle,
+    mut child: std::process::Child,
+    pid_guard: Arc<Mutex<Option<u32>>>,
+) -> Result<(), String> {
     let stdout = child.stdout.take().ok_or("stdout pipe missing")?;
     let stderr = child.stderr.take().ok_or("stderr pipe missing")?;
 
@@ -552,14 +557,20 @@ fn stream_and_wait(app: &AppHandle, mut child: std::process::Child) -> Result<()
         let _ = app.emit("download-progress", &line);
     }
 
-    match child.wait() {
+    let result = match child.wait() {
         Ok(s) if s.success() => Ok(()),
         Ok(_) => {
             let err_lines = stderr_handle.join().unwrap_or_default();
             Err(err_lines.join("\n").trim().to_string())
         }
         Err(e) => Err(e.to_string()),
-    }
+    };
+
+    // Clear the PID now that the process has exited.
+    let mut guard = pid_guard.lock().unwrap();
+    *guard = None;
+
+    result
 }
 
 // ─── Batch download ───────────────────────────────────────────────────────────
@@ -577,6 +588,7 @@ fn stream_and_wait(app: &AppHandle, mut child: std::process::Child) -> Result<()
 #[tauri::command]
 fn start_batch_download(
     app: AppHandle,
+    state: tauri::State<'_, DownloadState>,
     file_path: String,
     target_dir: String,
     max_height: u64,
@@ -604,6 +616,9 @@ fn start_batch_download(
     let out_template = build_output_template(&target_dir);
     let format_selector = build_height_selector(max_height);
 
+    // Clone the PID guard before spawning the thread (State ref can't move).
+    let pid_guard = state.running_pid.clone();
+
     std::thread::spawn(move || {
         let mut failures: Vec<String> = Vec::new();
 
@@ -630,7 +645,13 @@ fn start_batch_download(
 
             match cmd.spawn() {
                 Ok(child) => {
-                    if let Err(e) = stream_and_wait(&app, child) {
+                    let pid = child.id();
+                    {
+                        let mut guard = pid_guard.lock().unwrap();
+                        *guard = Some(pid);
+                    }
+                    let child_pid_guard = pid_guard.clone();
+                    if let Err(e) = stream_and_wait(&app, child, child_pid_guard) {
                         failures.push(format!("{url} — {e}"));
                     }
                 }
@@ -657,10 +678,37 @@ fn start_batch_download(
     Ok(format!("Batch started — {total} URLs queued"))
 }
 
+// ─── Cancel an active download by killing the tracked yt-dlp process ────────
+#[tauri::command]
+fn stop_download(state: tauri::State<'_, DownloadState>) -> Result<String, String> {
+    let pid = {
+        let mut guard = state.running_pid.lock().unwrap();
+        guard.take()
+    };
+    match pid {
+        Some(pid) => {
+            let output = Command::new("kill")
+                .arg(pid.to_string())
+                .output()
+                .map_err(|e| format!("Failed to run kill: {e}"))?;
+            if output.status.success() {
+                Ok("Download cancelled".to_string())
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                Err(format!("Failed to kill process {pid}: {stderr}"))
+            }
+        }
+        None => Err("No active download to cancel".to_string()),
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Starts the Tauri application and registers the download commands.
 pub fn run() {
     tauri::Builder::default()
+        .manage(DownloadState {
+            running_pid: Arc::new(Mutex::new(None)),
+        })
         .invoke_handler(tauri::generate_handler![
             open_directory_dialog,
             open_file_dialog,
@@ -670,6 +718,7 @@ pub fn run() {
             start_keyword_download,
             start_batch_download,
             update_yt_dlp,
+            stop_download,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running Tauri application");

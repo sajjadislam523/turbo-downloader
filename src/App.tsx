@@ -771,6 +771,19 @@ export default function App(): React.JSX.Element {
         pushToast,
     ]);
 
+    const cancelDownload = useCallback(async () => {
+        try {
+            await invoke("stop_download");
+            setStatus("idle");
+            setStatusMsg("Download cancelled");
+            setProgress(0);
+            setMetrics({ speed: "--", eta: "--", size: "--" });
+            pushToast("Download cancelled", "success");
+        } catch (err) {
+            pushToast(`Cancel failed: ${String(err)}`, "error");
+        }
+    }, [pushToast]);
+
     const updateEngine = useCallback(async () => {
         setUpdatingEngine(true);
         try {
@@ -1272,57 +1285,75 @@ export default function App(): React.JSX.Element {
                 {/* LOG STRIP */}
                 <RawLogStrip status={status} lastLine={rawLine} />
 
-                {/* DOWNLOAD BUTTON */}
-                <button
-                    disabled={!canDownload}
-                    onClick={startDownload}
-                    className="
-            w-full min-h-12 rounded-xl font-display font-bold text-[13px] sm:text-[14px]
-            tracking-widest uppercase transition-all
-            disabled:opacity-25 disabled:cursor-not-allowed
-            enabled:hover:scale-[1.01] enabled:active:scale-[0.99]
-          "
-                    style={{
-                        background: isDownloading
-                            ? "linear-gradient(90deg, #1a2a00, #263800)"
-                            : "linear-gradient(90deg, #3d4f00, #c8ff00 60%, #9cbf00)",
-                        color: isDownloading ? "#c8ff00" : "#0a0a0a",
-                        boxShadow:
-                            canDownload && !isDownloading
-                                ? "0 0 20px #c8ff0033, 0 2px 0 #9cbf00"
-                                : "none",
-                    }}
-                >
-                    {isDownloading ? (
-                        <span className="flex items-center justify-center gap-2">
-                            <Spinner />
-                            {mode === "batch" || mode === "keyword"
-                                ? batchTotal > 0
-                                    ? `Downloading ${batchCurrent}/${batchTotal}…`
-                                    : "Preparing queue…"
-                                : "Chunk lanes active…"}
-                        </span>
-                    ) : mode === "batch" ? (
-                        "⚡ Start Batch Download (MP4)"
-                    ) : mode === "keyword" ? (
-                        canKeywordDownload ? (
-                            "⚡ Start Keyword Search & Download (MP4)"
-                        ) : keywordValidating ? (
-                            "Checking URL and keyword matches…"
-                        ) : keywordSourceUrl.trim() === "" ? (
-                            "Enter Source URL to Begin"
-                        ) : keywordQuery.trim() === "" ? (
-                            "Enter Keyword to Validate"
-                        ) : keywordValidation &&
-                          !keywordValidation.can_download ? (
-                            "No Matching Videos — Adjust URL or Keyword"
+                {/* DOWNLOAD / CANCEL BUTTONS */}
+                <div className="flex gap-2">
+                    <button
+                        disabled={!canDownload}
+                        onClick={startDownload}
+                        className="
+                flex-1 min-h-12 rounded-xl font-display font-bold text-[13px] sm:text-[14px]
+                tracking-widest uppercase transition-all
+                disabled:opacity-25 disabled:cursor-not-allowed
+                enabled:hover:scale-[1.01] enabled:active:scale-[0.99]
+              "
+                        style={{
+                            background: isDownloading
+                                ? "linear-gradient(90deg, #1a2a00, #263800)"
+                                : "linear-gradient(90deg, #3d4f00, #c8ff00 60%, #9cbf00)",
+                            color: isDownloading ? "#c8ff00" : "#0a0a0a",
+                            boxShadow:
+                                canDownload && !isDownloading
+                                    ? "0 0 20px #c8ff0033, 0 2px 0 #9cbf00"
+                                    : "none",
+                        }}
+                    >
+                        {isDownloading ? (
+                            <span className="flex items-center justify-center gap-2">
+                                <Spinner />
+                                {mode === "batch" || mode === "keyword"
+                                    ? batchTotal > 0
+                                        ? `Downloading ${batchCurrent}/${batchTotal}…`
+                                        : "Preparing queue…"
+                                    : "Chunk lanes active…"}
+                            </span>
+                        ) : mode === "batch" ? (
+                            "⚡ Start Batch Download (MP4)"
+                        ) : mode === "keyword" ? (
+                            canKeywordDownload ? (
+                                "⚡ Start Keyword Search & Download (MP4)"
+                            ) : keywordValidating ? (
+                                "Checking URL and keyword matches…"
+                            ) : keywordSourceUrl.trim() === "" ? (
+                                "Enter Source URL to Begin"
+                            ) : keywordQuery.trim() === "" ? (
+                                "Enter Keyword to Validate"
+                            ) : keywordValidation &&
+                              !keywordValidation.can_download ? (
+                                "No Matching Videos — Adjust URL or Keyword"
+                            ) : (
+                                "Waiting for URL validation…"
+                            )
                         ) : (
-                            "Waiting for URL validation…"
-                        )
-                    ) : (
-                        "⚡ Download via Parallel Chunks"
+                            "⚡ Download via Parallel Chunks"
+                        )}
+                    </button>
+
+                    {/* Cancel button — only visible while a download is running */}
+                    {isDownloading && (
+                        <button
+                            onClick={cancelDownload}
+                            className="
+                  shrink-0 min-h-12 px-4 rounded-xl font-mono font-medium text-[11px]
+                  tracking-widest uppercase transition-all
+                  bg-[#1a0505] border border-[#ff4455]/40 text-[#ff4455]
+                  hover:bg-[#2a0505] hover:border-[#ff4455]/60
+                  active:scale-[0.97]
+                "
+                        >
+                            Cancel
+                        </button>
                     )}
-                </button>
+                </div>
             </main>
 
             {/* ── Footer ── */}
