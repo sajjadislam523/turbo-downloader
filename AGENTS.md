@@ -58,4 +58,17 @@ Codex will follow these rules when working on this project:
 - Respect the folder structure described above — never mix frontend and backend code
 - Run the commands listed above after every change to verify nothing broke
 - Log every session to project-docs/ with details about what changed
-- Update project-docs/CHANGES.md and project-docs/DECISIONS.md as work progresses
+- Update project-docs/CHANGES.md, project-docs/DECISIONS.md, and project-docs/ISSUES.md as work progresses
+
+## Resolved issues (2026-07-11)
+See `project-docs/ISSUES.md` for the full tracked list.
+- Dead code removed from `extract_source_info` (unreachable array branch)
+- Redundant yt-dlp validation removed from `start_keyword_download` (skips re-probe)
+- Unused `postcss` devDependency removed
+- Unnecessary `async` in `vite.config.ts` cleaned up
+- React `ErrorBoundary` wraps the app to catch render crashes
+- Cancel button added for active downloads (kills yt-dlp PID via `stop_download`)
+
+## Future work (not addressed)
+- `App.tsx` is 1339 lines in one component — extract sub-components
+- ESLint `exhaustive-deps` disabled for URL debounce — add `triggerFetch` to deps with proper stabilization

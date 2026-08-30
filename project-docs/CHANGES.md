@@ -6,6 +6,16 @@ Types: Added | Changed | Fixed | Removed | Refactored | Security | Docs
 
 ## [Unreleased]
 
+- [Fixed] rust: force GDK_BACKEND=x11 to prevent Wayland/GTK3 "not responding" crashes → see sessions/2026-07-11-002.md
+
+- [Fixed] rust: removed dead code path in `extract_source_info` (unreachable array branch) → see sessions/2026-07-11-001.md
+- [Fixed] rust: removed redundant yt-dlp validation in `start_keyword_download` (skip re-probe during download start) → see sessions/2026-07-11-001.md
+- [Removed] build: removed unused `postcss` devDependency (Tailwind v4 + Vite plugin doesn't need it) → see sessions/2026-07-11-001.md
+- [Fixed] build: removed unnecessary `async` keyword from `vite.config.ts` → see sessions/2026-07-11-001.md
+- [Added] ui: `ErrorBoundary` component wrapping the app to prevent blank-screen crashes → see sessions/2026-07-11-001.md
+- [Added] rust+ui: download cancel button with `stop_download` Tauri command (kills yt-dlp by PID) → see sessions/2026-07-11-001.md
+- [Docs] codex: created `project-docs/ISSUES.md` tracking all findings and their resolution → see sessions/2026-07-11-001.md
+
 - [Added] ui: wired keyword download button to backend `start_keyword_download` command → see sessions/2026-06-17-001.md
 - [Changed] ui: unified download handler to support all three modes (single, batch, keyword) with proper state management
 - [Changed] ui: enabled keyword download button when query is entered and app is ready

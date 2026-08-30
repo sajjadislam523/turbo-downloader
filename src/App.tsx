@@ -22,6 +22,17 @@ interface DownloadMetrics {
     size: string;
 }
 
+interface KeywordValidation {
+    valid: boolean;
+    source_title: string;
+    source_type: string;
+    entry_count?: number;
+    match_count: number;
+    sample_titles: string[];
+    message: string;
+    can_download: boolean;
+}
+
 type AppMode = "single" | "batch" | "keyword";
 type AppStatus =
     | "idle"
@@ -332,6 +343,9 @@ export default function App(): React.JSX.Element {
     const [keywordQuery, setKeywordQuery] = useState<string>("");
     const [keywordLimit, setKeywordLimit] = useState<number>(5);
     const [keywordResolution, setKeywordResolution] = useState<number>(1080);
+    const [keywordValidation, setKeywordValidation] =
+        useState<KeywordValidation | null>(null);
+    const [keywordValidating, setKeywordValidating] = useState<boolean>(false);
 
     // ── Shared state ────────────────────────────────────────────────────────────
     const [savePath, setSavePath] = useState<string>("~/Downloads");
@@ -357,6 +371,10 @@ export default function App(): React.JSX.Element {
     const fetchDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
     // Generation counter — lets us discard results from superseded fetches
     const fetchGen = useRef<number>(0);
+    const keywordValidateGen = useRef<number>(0);
+    const keywordValidateDebounce = useRef<ReturnType<typeof setTimeout> | null>(
+        null,
+    );
     const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // Show a toast, replacing any currently-visible one, auto-dismissing
@@ -384,12 +402,14 @@ export default function App(): React.JSX.Element {
                 ? "Paste a video URL to begin"
                 : m === "batch"
                   ? "Select a .txt file with URLs"
-                  : "Enter a keyword to search",
+                  : "Enter a channel, playlist, or video page URL",
         );
         setProgress(0);
         setMetrics({ speed: "--", eta: "--", size: "--" });
         setBatchCurrent(0);
         setBatchTotal(0);
+        setKeywordValidation(null);
+        setKeywordValidating(false);
     }, []);
 
     // ── Clipboard monitor ────────────────────────────────────────────────────────
@@ -490,6 +510,21 @@ export default function App(): React.JSX.Element {
                 }),
             );
 
+            // Batch mode: Rust launches yt-dlp once per URL and emits this
+            // right before each one starts. Batch-file downloads never print
+            // a "Downloading item X of Y" line for yt-dlp to parse (that only
+            // happens for real playlists), so this is the reliable source of
+            // truth for the X/Y counter in batch mode — the parseProgressLine
+            // batchItem match above still covers keyword mode, where the
+            // source really is a playlist/channel and yt-dlp does print it.
+            subs.push(
+                await listen<number>("batch-item-start", (ev) => {
+                    setBatchCurrent(ev.payload);
+                    setProgress(0);
+                    setMetrics({ speed: "--", eta: "--", size: "--" });
+                }),
+            );
+
             subs.push(
                 await listen("download-complete", () => {
                     setStatus("done");
@@ -509,7 +544,91 @@ export default function App(): React.JSX.Element {
 
         setup();
         return () => subs.forEach((u) => u());
-    }, []);
+    }, [pushToast]);
+
+    const runKeywordValidation = useCallback(
+        async (source: string, query: string, limit: number) => {
+            const myGen = ++keywordValidateGen.current;
+            setKeywordValidating(true);
+            setKeywordValidation(null);
+
+            try {
+                const result = await invoke<KeywordValidation>(
+                    "validate_keyword_source",
+                    {
+                        sourceUrl: source.trim(),
+                        query: query.trim(),
+                        resultCount: limit,
+                    },
+                );
+                if (myGen !== keywordValidateGen.current) return;
+                setKeywordValidation(result);
+                setStatus(result.can_download ? "ready" : "error");
+                setStatusMsg(result.message);
+            } catch (err) {
+                if (myGen !== keywordValidateGen.current) return;
+                setKeywordValidation(null);
+                setStatus("error");
+                setStatusMsg(`Validation failed: ${String(err)}`);
+                pushToast(`Validation failed: ${String(err)}`, "error");
+            } finally {
+                if (myGen === keywordValidateGen.current) {
+                    setKeywordValidating(false);
+                }
+            }
+        },
+        [pushToast],
+    );
+
+    // Debounced keyword source + query validation (800 ms)
+    useEffect(() => {
+        if (mode !== "keyword") return;
+
+        if (keywordValidateDebounce.current) {
+            clearTimeout(keywordValidateDebounce.current);
+        }
+
+        const source = keywordSourceUrl.trim();
+        const query = keywordQuery.trim();
+
+        if (
+            !source.startsWith("http://") &&
+            !source.startsWith("https://")
+        ) {
+            setKeywordValidation(null);
+            setKeywordValidating(false);
+            setStatus("idle");
+            setStatusMsg("Enter a channel, playlist, or video page URL");
+            return;
+        }
+
+        if (query === "") {
+            setKeywordValidation(null);
+            setKeywordValidating(false);
+            setStatus("idle");
+            setStatusMsg("Enter a keyword to filter video titles");
+            return;
+        }
+
+        setStatus("fetching");
+        setStatusMsg("Checking source URL and keyword matches…");
+
+        keywordValidateDebounce.current = setTimeout(() => {
+            runKeywordValidation(source, query, keywordLimit);
+        }, 800);
+
+        return () => {
+            if (keywordValidateDebounce.current) {
+                clearTimeout(keywordValidateDebounce.current);
+            }
+        };
+    }, [
+        mode,
+        keywordSourceUrl,
+        keywordQuery,
+        keywordLimit,
+        runKeywordValidation,
+    ]);
 
     // ── Fetch MP4 formats for a single URL ──────────────────────────────────────
     const triggerFetch = useCallback(async (targetUrl: string) => {
@@ -573,14 +692,17 @@ export default function App(): React.JSX.Element {
         }
     }, []);
 
+    const handleKeywordSourceChange = useCallback((value: string) => {
+        setKeywordSourceUrl(value);
+        setKeywordValidation(null);
+        setProgress(0);
+        setBatchCurrent(0);
+        setBatchTotal(0);
+    }, []);
+
     const handleKeywordChange = useCallback((value: string) => {
         setKeywordQuery(value);
-        setStatus(value.trim() === "" ? "idle" : "ready");
-        setStatusMsg(
-            value.trim() === ""
-                ? "Enter a keyword to search"
-                : "Keyword ready — backend command pending",
-        );
+        setKeywordValidation(null);
         setProgress(0);
         setBatchCurrent(0);
         setBatchTotal(0);
@@ -649,6 +771,19 @@ export default function App(): React.JSX.Element {
         pushToast,
     ]);
 
+    const cancelDownload = useCallback(async () => {
+        try {
+            await invoke("stop_download");
+            setStatus("idle");
+            setStatusMsg("Download cancelled");
+            setProgress(0);
+            setMetrics({ speed: "--", eta: "--", size: "--" });
+            pushToast("Download cancelled", "success");
+        } catch (err) {
+            pushToast(`Cancel failed: ${String(err)}`, "error");
+        }
+    }, [pushToast]);
+
     const updateEngine = useCallback(async () => {
         setUpdatingEngine(true);
         try {
@@ -678,6 +813,8 @@ export default function App(): React.JSX.Element {
               : mode === "keyword"
                 ? keywordSourceUrl.trim() !== "" &&
                   keywordQuery.trim() !== "" &&
+                  !keywordValidating &&
+                  keywordValidation?.can_download === true &&
                   (status === "ready" ||
                       status === "done" ||
                       status === "error")
@@ -686,9 +823,8 @@ export default function App(): React.JSX.Element {
     const canKeywordDownload =
         mode === "keyword" &&
         !isDownloading &&
-        keywordSourceUrl.trim() !== "" &&
-        keywordQuery.trim() !== "" &&
-        (status === "ready" || status === "done" || status === "error");
+        !keywordValidating &&
+        keywordValidation?.can_download === true;
 
     const statusColor: Record<AppStatus, string> = {
         idle: "#3a3a3a",
@@ -910,19 +1046,69 @@ export default function App(): React.JSX.Element {
                                 type="text"
                                 value={keywordSourceUrl}
                                 onChange={(event) =>
-                                    setKeywordSourceUrl(event.target.value)
+                                    handleKeywordSourceChange(
+                                        event.target.value,
+                                    )
                                 }
-                                placeholder="https://youtube.com/channel/... or any video website"
+                                placeholder="https://youtube.com/@channel/videos or playlist URL"
                                 className="
                     acid-focus w-full bg-[#111] border border-[#242424] rounded-lg
                     px-4 py-3 pr-11 text-[13px] font-mono text-[#ddd]
                     placeholder-[#2a2a2a] transition-all focus:border-[#c8ff00]/30
                   "
                             />
-                            <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#2a2a2a] text-sm">
-                                🔗
+                            <span className="absolute right-3.5 top-1/2 -translate-y-1/2">
+                                {keywordValidating ? (
+                                    <span className="text-[#6699ff]">
+                                        <Spinner />
+                                    </span>
+                                ) : keywordValidation?.can_download ? (
+                                    <span className="text-[#c8ff00] text-sm">
+                                        ✓
+                                    </span>
+                                ) : keywordValidation &&
+                                    !keywordValidation.can_download ? (
+                                    <span className="text-[#ff4455] text-sm">
+                                        ✕
+                                    </span>
+                                ) : (
+                                    <span className="text-[#2a2a2a] text-sm">
+                                        🔗
+                                    </span>
+                                )}
                             </span>
                         </div>
+                        {keywordValidation && (
+                            <div
+                                className={`slide-in mt-2 rounded-lg border px-4 py-2 ${
+                                    keywordValidation.can_download
+                                        ? "bg-[#111] border-[#1e1e1e]"
+                                        : "bg-[#1a0505] border-[#ff4455]/30"
+                                }`}
+                            >
+                                <p className="text-[11px] font-mono text-[#aaa] leading-relaxed">
+                                    {keywordValidation.message}
+                                </p>
+                                {keywordValidation.sample_titles.length > 0 && (
+                                    <ul className="mt-1.5 space-y-0.5">
+                                        {keywordValidation.sample_titles.map(
+                                            (title) => (
+                                                <li
+                                                    key={title}
+                                                    className="text-[10px] font-mono text-[#666] truncate"
+                                                >
+                                                    · {title}
+                                                </li>
+                                            ),
+                                        )}
+                                    </ul>
+                                )}
+                            </div>
+                        )}
+                        <p className="mt-2 font-mono text-[9px] text-[#333] tracking-wide">
+                            Channel, playlist, or single video page · titles
+                            are filtered by your keyword before download
+                        </p>
                         <FieldLabel className="mt-4">Search Keyword</FieldLabel>
                         <div className="relative">
                             <input
@@ -1099,50 +1285,75 @@ export default function App(): React.JSX.Element {
                 {/* LOG STRIP */}
                 <RawLogStrip status={status} lastLine={rawLine} />
 
-                {/* DOWNLOAD BUTTON */}
-                <button
-                    disabled={!canDownload}
-                    onClick={startDownload}
-                    className="
-            w-full min-h-12 rounded-xl font-display font-bold text-[13px] sm:text-[14px]
-            tracking-widest uppercase transition-all
-            disabled:opacity-25 disabled:cursor-not-allowed
-            enabled:hover:scale-[1.01] enabled:active:scale-[0.99]
-          "
-                    style={{
-                        background: isDownloading
-                            ? "linear-gradient(90deg, #1a2a00, #263800)"
-                            : "linear-gradient(90deg, #3d4f00, #c8ff00 60%, #9cbf00)",
-                        color: isDownloading ? "#c8ff00" : "#0a0a0a",
-                        boxShadow:
-                            canDownload && !isDownloading
-                                ? "0 0 20px #c8ff0033, 0 2px 0 #9cbf00"
-                                : "none",
-                    }}
-                >
-                    {isDownloading ? (
-                        <span className="flex items-center justify-center gap-2">
-                            <Spinner />
-                            {mode === "batch" || mode === "keyword"
-                                ? batchTotal > 0
-                                    ? `Downloading ${batchCurrent}/${batchTotal}…`
-                                    : "Preparing queue…"
-                                : "Chunk lanes active…"}
-                        </span>
-                    ) : mode === "batch" ? (
-                        "⚡ Start Batch Download (MP4)"
-                    ) : mode === "keyword" ? (
-                        canKeywordDownload ? (
-                            "⚡ Start Keyword Search & Download (MP4)"
-                        ) : keywordSourceUrl.trim() === "" ? (
-                            "Enter Source URL to Begin"
+                {/* DOWNLOAD / CANCEL BUTTONS */}
+                <div className="flex gap-2">
+                    <button
+                        disabled={!canDownload}
+                        onClick={startDownload}
+                        className="
+                flex-1 min-h-12 rounded-xl font-display font-bold text-[13px] sm:text-[14px]
+                tracking-widest uppercase transition-all
+                disabled:opacity-25 disabled:cursor-not-allowed
+                enabled:hover:scale-[1.01] enabled:active:scale-[0.99]
+              "
+                        style={{
+                            background: isDownloading
+                                ? "linear-gradient(90deg, #1a2a00, #263800)"
+                                : "linear-gradient(90deg, #3d4f00, #c8ff00 60%, #9cbf00)",
+                            color: isDownloading ? "#c8ff00" : "#0a0a0a",
+                            boxShadow:
+                                canDownload && !isDownloading
+                                    ? "0 0 20px #c8ff0033, 0 2px 0 #9cbf00"
+                                    : "none",
+                        }}
+                    >
+                        {isDownloading ? (
+                            <span className="flex items-center justify-center gap-2">
+                                <Spinner />
+                                {mode === "batch" || mode === "keyword"
+                                    ? batchTotal > 0
+                                        ? `Downloading ${batchCurrent}/${batchTotal}…`
+                                        : "Preparing queue…"
+                                    : "Chunk lanes active…"}
+                            </span>
+                        ) : mode === "batch" ? (
+                            "⚡ Start Batch Download (MP4)"
+                        ) : mode === "keyword" ? (
+                            canKeywordDownload ? (
+                                "⚡ Start Keyword Search & Download (MP4)"
+                            ) : keywordValidating ? (
+                                "Checking URL and keyword matches…"
+                            ) : keywordSourceUrl.trim() === "" ? (
+                                "Enter Source URL to Begin"
+                            ) : keywordQuery.trim() === "" ? (
+                                "Enter Keyword to Validate"
+                            ) : keywordValidation &&
+                              !keywordValidation.can_download ? (
+                                "No Matching Videos — Adjust URL or Keyword"
+                            ) : (
+                                "Waiting for URL validation…"
+                            )
                         ) : (
-                            "Enter Keyword to Prepare Search"
-                        )
-                    ) : (
-                        "⚡ Download via Parallel Chunks"
+                            "⚡ Download via Parallel Chunks"
+                        )}
+                    </button>
+
+                    {/* Cancel button — only visible while a download is running */}
+                    {isDownloading && (
+                        <button
+                            onClick={cancelDownload}
+                            className="
+                  shrink-0 min-h-12 px-4 rounded-xl font-mono font-medium text-[11px]
+                  tracking-widest uppercase transition-all
+                  bg-[#1a0505] border border-[#ff4455]/40 text-[#ff4455]
+                  hover:bg-[#2a0505] hover:border-[#ff4455]/60
+                  active:scale-[0.97]
+                "
+                        >
+                            Cancel
+                        </button>
                     )}
-                </button>
+                </div>
             </main>
 
             {/* ── Footer ── */}
