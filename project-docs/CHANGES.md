@@ -6,6 +6,22 @@ Types: Added | Changed | Fixed | Removed | Refactored | Security | Docs
 
 ## [Unreleased]
 
+- [Added] rust: `busy: Arc<AtomicBool>` guard on `DownloadState` rejects a second `start_*_download` call while one is already running (including during a batch's inter-file gaps), closing a race where an overlapping call could orphan the first process → see project-docs/plans/bug-review-2026-09-03.md
+- [Fixed] rust: cancel now kills the whole yt-dlp process group (`process_group(0)` + `kill -TERM -PID`), not just the yt-dlp PID, so an in-progress ffmpeg merge is killed too instead of continuing to write the output file → see project-docs/plans/bug-review-2026-09-03.md
+- [Added] rust: closing the app window while a download is active now kills the tracked process group via a new `on_window_event` handler, instead of leaving yt-dlp/ffmpeg running as orphans → see project-docs/plans/bug-review-2026-09-03.md
+- [Fixed] rust: `start_keyword_download` now passes `--playlist-end` matching the pre-flight validation's scan depth (`KEYWORD_SCAN_LIMIT`), so the real download can no longer crawl arbitrarily deeper into a channel than what validation told the user to expect → see project-docs/plans/bug-review-2026-09-03.md
+- [Added] rust+ui: batch downloads with some (not all) files failing now emit a distinct `download-partial` event with success/failure counts, shown in the UI instead of reading as a total failure → see project-docs/plans/bug-review-2026-09-03.md
+- [Fixed] rust: replaced `.lock().unwrap()` on the shared PID mutex with a poison-tolerant `pid_lock` helper, so a poisoned lock recovers instead of aborting the whole app (release profile uses `panic = "abort"`) → see project-docs/plans/bug-review-2026-09-03.md
+- [Security] tauri: set a restrictive CSP in `tauri.conf.json` (was `null`) — `default-src`/`script-src`/`connect-src` limited to `'self'`, fonts to Google Fonts' two origins → see project-docs/plans/bug-review-2026-09-03.md
+- [Added] rust: unit tests for the pure helper functions in `lib.rs` (20 tests: URL/query validation, format selectors, tilde expansion, regex/match-filter escaping, source-info extraction, the new overlap guard) → see project-docs/plans/bug-review-2026-09-03.md
+- [Added] ci: `.github/workflows/ci.yml` — frontend job (`npm run build`) and Rust job (`cargo check` + `cargo test` + `cargo clippy -D warnings`) on push/PR → see project-docs/plans/bug-review-2026-09-03.md
+- [Fixed] rust: fixed 4 pre-existing clippy `lines_filter_map_ok` warnings (`.lines().flatten()` → `.lines().map_while(Result::ok)` on the yt-dlp stdout/stderr readers) so CI's clippy gate starts clean → see project-docs/plans/bug-review-2026-09-03.md
+- [Added] ui: `mode`, `savePath`, `batchResolution`, `keywordLimit`, and `keywordResolution` now persist to `localStorage` and restore on next launch → see project-docs/plans/bug-review-2026-09-03.md
+
+- [Fixed] rust: batch download cancel now actually stops the queue — added a shared `cancelled` flag on `DownloadState`, checked at the top of each loop iteration and in short-increment sleeps between files, instead of the loop silently continuing to the next queued URL after the current file was killed → see project-docs/plans/bug-review-2026-09-03.md
+- [Fixed] rust: `stop_download` no longer produces a spurious `download-error` toast after a deliberate cancel (single, batch, and keyword downloads) — background threads now check the `cancelled` flag before reporting a killed process's non-zero exit as a failure → see project-docs/plans/bug-review-2026-09-03.md
+- [Fixed] rust: `build_match_filter` now escapes literal `'` characters, fixing keyword searches for titles containing apostrophes (e.g. "don't"), which previously broke yt-dlp's `--match-filters` quoted-string parsing → see project-docs/plans/bug-review-2026-09-03.md
+
 - [Fixed] rust: force GDK_BACKEND=x11 to prevent Wayland/GTK3 "not responding" crashes → see sessions/2026-07-11-002.md
 
 - [Fixed] rust: removed dead code path in `extract_source_info` (unreachable array branch) → see sessions/2026-07-11-001.md

@@ -43,6 +43,35 @@ type AppStatus =
     | "error";
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Settings persistence — save path, resolution choices, and last-used mode
+// survive an app restart via localStorage. Deliberately excludes anything
+// tied to a specific in-progress session (the URL fields, batch file path,
+// fetched metadata) since restoring those on a fresh launch would be
+// confusing rather than convenient.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SETTINGS_KEY = "turbodl.settings.v1";
+
+interface PersistedSettings {
+    mode: AppMode;
+    savePath: string;
+    batchResolution: number;
+    keywordLimit: number;
+    keywordResolution: number;
+}
+
+function loadSettings(): Partial<PersistedSettings> {
+    try {
+        const raw = localStorage.getItem(SETTINGS_KEY);
+        return raw ? (JSON.parse(raw) as Partial<PersistedSettings>) : {};
+    } catch {
+        return {};
+    }
+}
+
+const savedSettings = loadSettings();
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Reusable micro-components
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -323,7 +352,7 @@ function RawLogStrip({
 
 export default function App(): React.JSX.Element {
     // ── Mode ────────────────────────────────────────────────────────────────────
-    const [mode, setMode] = useState<AppMode>("single");
+    const [mode, setMode] = useState<AppMode>(savedSettings.mode ?? "single");
 
     // ── Single-URL state ────────────────────────────────────────────────────────
     const [url, setUrl] = useState<string>("");
@@ -336,19 +365,27 @@ export default function App(): React.JSX.Element {
     const [batchTotal, setBatchTotal] = useState<number>(0);
     const [batchCurrent, setBatchCurrent] = useState<number>(0);
     // 0 = best available; any other value caps the height (e.g. 1080)
-    const [batchResolution, setBatchResolution] = useState<number>(0);
+    const [batchResolution, setBatchResolution] = useState<number>(
+        savedSettings.batchResolution ?? 0,
+    );
 
     // ── Keyword search state ────────────────────────────────────────────────────
     const [keywordSourceUrl, setKeywordSourceUrl] = useState<string>("");
     const [keywordQuery, setKeywordQuery] = useState<string>("");
-    const [keywordLimit, setKeywordLimit] = useState<number>(5);
-    const [keywordResolution, setKeywordResolution] = useState<number>(1080);
+    const [keywordLimit, setKeywordLimit] = useState<number>(
+        savedSettings.keywordLimit ?? 5,
+    );
+    const [keywordResolution, setKeywordResolution] = useState<number>(
+        savedSettings.keywordResolution ?? 1080,
+    );
     const [keywordValidation, setKeywordValidation] =
         useState<KeywordValidation | null>(null);
     const [keywordValidating, setKeywordValidating] = useState<boolean>(false);
 
     // ── Shared state ────────────────────────────────────────────────────────────
-    const [savePath, setSavePath] = useState<string>("~/Downloads");
+    const [savePath, setSavePath] = useState<string>(
+        savedSettings.savePath ?? "~/Downloads",
+    );
     const [status, setStatus] = useState<AppStatus>("idle");
     const [statusMsg, setStatusMsg] = useState<string>(
         "Paste a video URL to begin",
@@ -411,6 +448,22 @@ export default function App(): React.JSX.Element {
         setKeywordValidation(null);
         setKeywordValidating(false);
     }, []);
+
+    // ── Persist settings across restarts ─────────────────────────────────────────
+    useEffect(() => {
+        try {
+            const settings: PersistedSettings = {
+                mode,
+                savePath,
+                batchResolution,
+                keywordLimit,
+                keywordResolution,
+            };
+            localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+        } catch {
+            /* storage unavailable — settings just won't persist this run */
+        }
+    }, [mode, savePath, batchResolution, keywordLimit, keywordResolution]);
 
     // ── Clipboard monitor ────────────────────────────────────────────────────────
     useEffect(() => {
@@ -530,6 +583,28 @@ export default function App(): React.JSX.Element {
                     setStatus("done");
                     setProgress(100);
                     setStatusMsg("All downloads complete — files saved!");
+                }),
+            );
+
+            // Batch mode: some files succeeded and some failed — distinct
+            // from download-complete (all succeeded) and download-error
+            // (all failed), so a 49/50 run doesn't read as a total failure.
+            subs.push(
+                await listen<{
+                    succeeded: number;
+                    failed: number;
+                    errors: string[];
+                }>("download-partial", (ev) => {
+                    const { succeeded, failed, errors } = ev.payload;
+                    setStatus("done");
+                    setProgress(100);
+                    setStatusMsg(
+                        `${succeeded} of ${succeeded + failed} downloaded — ${failed} failed`,
+                    );
+                    pushToast(
+                        `${succeeded} of ${succeeded + failed} files downloaded successfully.\n\nFailed:\n${errors.join("\n")}`,
+                        "error",
+                    );
                 }),
             );
 
