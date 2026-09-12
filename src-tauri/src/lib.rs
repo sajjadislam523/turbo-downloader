@@ -1103,10 +1103,6 @@ fn escape_regex(text: &str) -> String {
 const DEEP_LINK_SCHEME: &str = "turbodl";
 const DEEP_LINK_MAX_PAYLOAD_BYTES: usize = 4096;
 const DEEP_LINK_MAX_BATCH: usize = 50;
-// Deep-linked items don't have a frontend-chosen save path to draw from (the
-// browser extension has no UI of its own for that) — land them in the same
-// default the app itself starts with, same as a fresh single-mode download.
-const DEEP_LINK_DEFAULT_SAVE_PATH: &str = "~/Downloads";
 
 fn handle_incoming_deep_link(app: &AppHandle, raw: &str) {
     if raw.len() > DEEP_LINK_MAX_PAYLOAD_BYTES {
@@ -1125,6 +1121,12 @@ fn handle_incoming_deep_link(app: &AppHandle, raw: &str) {
     }
 
     let queue_state = app.state::<queue::QueueState>();
+    // Mirrors whatever the frontend currently has selected as its Save-To
+    // folder (kept in sync by set_default_save_path, called from App.tsx on
+    // mount and on every change) — a deep link has no frontend call of its
+    // own to carry the user's chosen path along with it, unlike single/
+    // batch/keyword downloads, which the frontend always passes explicitly.
+    let save_path = queue_state.default_save_path();
 
     match parsed.host_str().unwrap_or("") {
         "add" => {
@@ -1141,7 +1143,7 @@ fn handle_incoming_deep_link(app: &AppHandle, raw: &str) {
                     let ids = queue::push_items(
                         app,
                         &queue_state.inner,
-                        vec![extension_item_spec(clean)],
+                        vec![extension_item_spec(clean, save_path)],
                     );
                     let _ = app.emit("deep-link-added", ids.len());
                 }
@@ -1167,7 +1169,7 @@ fn handle_incoming_deep_link(app: &AppHandle, raw: &str) {
             let mut skipped = 0u32;
             for raw_url in urls {
                 match sanitize_extension_url(&raw_url) {
-                    Ok(clean) => specs.push(extension_item_spec(clean)),
+                    Ok(clean) => specs.push(extension_item_spec(clean, save_path.clone())),
                     Err(_) => skipped += 1,
                 }
             }
@@ -1185,14 +1187,14 @@ fn handle_incoming_deep_link(app: &AppHandle, raw: &str) {
     }
 }
 
-fn extension_item_spec(url: String) -> queue::NewItemSpec {
+fn extension_item_spec(url: String, save_path: String) -> queue::NewItemSpec {
     queue::NewItemSpec {
         url,
         title: None,
         source: queue::QueueSource::Extension,
         format_id: None,
         resolution: Some(0),
-        save_path: DEEP_LINK_DEFAULT_SAVE_PATH.to_string(),
+        save_path,
     }
 }
 
@@ -1297,6 +1299,7 @@ pub fn run() {
             queue::pause_queue_item,
             queue::resume_queue_item,
             queue::set_max_concurrency,
+            queue::set_default_save_path,
             queue::get_queue_snapshot,
             queue::remove_completed_item,
             queue::clear_completed,

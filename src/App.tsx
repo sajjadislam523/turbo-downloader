@@ -61,6 +61,19 @@ function AppShell(): React.JSX.Element {
         }
     }, [mode, savePath]);
 
+    // Mirrors the current Save-To folder into the Rust backend so a link
+    // arriving via the browser extension's turbodl:// deep link — which has
+    // no frontend call of its own to carry this along with it, unlike
+    // single/batch/keyword downloads — lands in the same place everything
+    // else does instead of a hardcoded default. Runs on mount too, so a
+    // deep link arriving right after launch still gets whatever path was
+    // restored from localStorage rather than the app's built-in default.
+    useEffect(() => {
+        invoke("set_default_save_path", { path: savePath }).catch(() => {
+            /* backend not ready yet — a later change will still sync */
+        });
+    }, [savePath]);
+
     // Surfaces the browser-extension deep-link bridge's outcome — a
     // turbodl://add(-batch) link that Rust already validated and enqueued
     // (or rejected) before either event fires. See handle_incoming_deep_link
