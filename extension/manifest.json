@@ -3,7 +3,7 @@
     "name": "TurboDL Ultra — Send to App",
     "version": "1.0.0",
     "description": "Send the current page or a link to the TurboDL Ultra desktop app for downloading, without copy-pasting.",
-    "permissions": ["contextMenus", "activeTab", "scripting"],
+    "permissions": ["contextMenus", "activeTab"],
     "background": {
         "service_worker": "background.js"
     },

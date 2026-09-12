@@ -22,6 +22,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter};
 
 const DEFAULT_MAX_CONCURRENCY: usize = 3;
+const DEFAULT_SAVE_PATH: &str = "~/Downloads";
 const MIN_CONCURRENCY: usize = 1;
 const MAX_CONCURRENCY: usize = 8;
 const DISPATCH_TICK: Duration = Duration::from_millis(250);
@@ -109,6 +110,14 @@ pub struct QueueStateInner {
     cancelled_ids: Mutex<HashSet<String>>,
     paused_ids: Mutex<HashSet<String>>,
     shutdown: AtomicBool,
+    /// The frontend's current Save-To folder, mirrored here so a deep link
+    /// arriving straight from the OS (no frontend call involved at all) has
+    /// somewhere correct to land instead of a hardcoded default. Kept in
+    /// sync by the frontend calling set_default_save_path on every change
+    /// (see App.tsx) — single/batch/keyword downloads don't need this since
+    /// the frontend already passes its current save path explicitly with
+    /// every enqueue call.
+    default_save_path: Mutex<String>,
 }
 
 #[derive(Clone)]
@@ -129,6 +138,7 @@ impl QueueState {
                 cancelled_ids: Mutex::new(HashSet::new()),
                 paused_ids: Mutex::new(HashSet::new()),
                 shutdown: AtomicBool::new(false),
+                default_save_path: Mutex::new(DEFAULT_SAVE_PATH.to_string()),
             }),
         }
     }
@@ -141,6 +151,11 @@ impl QueueState {
 
     pub fn request_shutdown(&self) {
         self.inner.shutdown.store(true, Ordering::SeqCst);
+    }
+
+    /// The save path a deep link should use — see the field doc comment.
+    pub fn default_save_path(&self) -> String {
+        lk(&self.inner.default_save_path).clone()
     }
 }
 
@@ -461,6 +476,16 @@ pub fn set_max_concurrency(state: tauri::State<'_, QueueState>, value: usize) ->
     Ok(clamped)
 }
 
+// Keeps handle_incoming_deep_link's save path in sync with whatever the
+// frontend currently has selected — see the default_save_path field doc
+// comment on QueueStateInner. The frontend calls this on mount and on every
+// change of its own savePath state (App.tsx).
+#[tauri::command]
+pub fn set_default_save_path(state: tauri::State<'_, QueueState>, path: String) -> Result<(), String> {
+    *lk(&state.inner.default_save_path) = path;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_queue_snapshot(state: tauri::State<'_, QueueState>) -> Result<Vec<QueueItem>, String> {
     Ok(lk(&state.inner.items).clone())
@@ -775,5 +800,14 @@ mod tests {
         assert_eq!(state.inner.max_concurrency.load(Ordering::SeqCst), DEFAULT_MAX_CONCURRENCY);
         assert_eq!(lk(&state.inner.items).len(), 0);
         assert!(state.snapshot_running_pids().is_empty());
+    }
+
+    #[test]
+    fn default_save_path_starts_at_the_fallback_and_reflects_updates() {
+        let state = QueueState::new();
+        assert_eq!(state.default_save_path(), DEFAULT_SAVE_PATH);
+
+        *lk(&state.inner.default_save_path) = "/mnt/videos".to_string();
+        assert_eq!(state.default_save_path(), "/mnt/videos");
     }
 }
