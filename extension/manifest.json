@@ -1,0 +1,14 @@
+{
+    "manifest_version": 3,
+    "name": "TurboDL Ultra — Send to App",
+    "version": "1.0.0",
+    "description": "Send the current page or a link to the TurboDL Ultra desktop app for downloading, without copy-pasting.",
+    "permissions": ["contextMenus", "activeTab", "scripting"],
+    "background": {
+        "service_worker": "background.js"
+    },
+    "action": {
+        "default_popup": "popup.html",
+        "default_title": "Send to TurboDL"
+    }
+}
