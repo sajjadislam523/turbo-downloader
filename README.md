@@ -45,6 +45,7 @@ It exists to be **fast** (parallel downloads at two levels — several files at 
 |---|---|
 | 🚀 Concurrent download queue | Several videos download in parallel (configurable 1–8 at once, adjustable live from the queue view) instead of one at a time — see [Concurrent Download Queue](#concurrent-download-queue) |
 | ⏸️ Pause / Resume | Pause any running download and resume it later — it picks up from where it left off (`yt-dlp` resumes partial files by default) |
+| ⟳ Retry | A download that failed entirely (not just a transient fragment error `yt-dlp` already retries on its own) can be re-queued with one click, no re-adding the link |
 | 📋 Three input modes, one queue | **Single** (paste one or several URLs, per-video format picker), **Batch** (paste a list or load a `.txt` file), **Keyword** (channel/playlist + keyword → auto-discovers matches) — all three feed the same queue |
 | 🧩 Chrome extension | Right-click a page or link in Chrome → "Send to TurboDL" — no copy-pasting. See [Browser Extension](#browser-extension) |
 | 🔍 Zero-click auto-fetch | A single pasted URL → formats appear instantly (600ms debounce), no button needed |
@@ -260,6 +261,7 @@ Every download — single, batch, or keyword — goes into one shared queue inst
 - **Per-host cooldown.** After a download for a given host finishes, that host gets a short (4–8s) breather before the next one from the same host starts — this replaces what used to be a single global pause between every download.
 - **Disk-space check.** Before starting a new download, the app checks free space on its target drive (via `df`) and refuses to start (with a clear error on that row) if it's under 500MB, rather than risk a half-written file.
 - **Pause / Resume.** Pausing a running item kills its `yt-dlp` process but keeps the row in the queue; Resume re-queues it, and `yt-dlp` resumes the partially-downloaded file by default — no data is re-downloaded from scratch. A paused item doesn't count against your concurrency limit, so it frees up a slot for something else immediately.
+- **Retry.** A `yt-dlp` run already retries transient failures *within itself* (dropped connections, timed-out fragments — up to 15 attempts each) — but if it gives up entirely (host unreachable, a 5xx, etc.) the item ends up **Failed**. Click the ⟳ **Retry** button on that row to put it straight back on the queue with the same URL/format/save path, no need to re-add it.
 - **Cancel** removes an item for good (whether it was running, pending, or paused). **Cancel All** and **Clear Completed** act on the whole queue at once.
 
 ### Known limitation
@@ -289,14 +291,15 @@ TurboDL Ultra itself must already be installed and runnable (see [Getting Starte
 
 **From the toolbar button:** click the extension icon, then **"Send Current Tab"**.
 
-Either way, this opens a new tab (`TurboDL Ultra` — sending the link) that does the actual work: it tries to open the app automatically, and always shows an **"Open TurboDL Ultra"** button as a guaranteed fallback if nothing happens on its own — click it. Your browser will then ask **"Open TurboDL Ultra?"** (this is your browser's own safety prompt for external links, not something from this app) — check **"Always allow"** if you don't want to see it every time. If TurboDL Ultra isn't already running, this launches it; if it's already open, sending a link brings it to the front with the new item already appearing in the queue. You can close that helper tab once you've seen the prompt or clicked the button.
+Either way, you'll see a **desktop notification** ("Link sent — check the app's queue") confirming the link left the browser, and a new tab briefly opens to do the actual work: it tries to open the app automatically, and always shows an **"Open TurboDL Ultra"** button as a guaranteed fallback if nothing happens on its own — click it if the tab is still there after a couple seconds. Your browser will then ask **"Open TurboDL Ultra?"** (this is your browser's own safety prompt for external links, not something from this app) — check **"Always allow"** if you don't want to see it every time. If TurboDL Ultra isn't already running, this launches it; if it's already open, sending a link brings it to the front with the new item already appearing in the queue. That helper tab closes itself automatically once the handoff has been attempted (or after a few seconds regardless) — you shouldn't need to close it by hand.
 
 ### What to expect
 
 - **Where to look for it**: the sent link appears as a new row in the **queue** at the bottom of the TurboDL Ultra window — visible regardless of which tab (Single/Batch/Keyword) is currently selected, marked with a 🧩 icon. That's also where you watch its progress.
 - **Where the file lands**: whatever folder is currently set as **Save To** in the app (shown in the header), at the best available quality — the extension has no UI of its own to pick a format or folder before sending, so it always uses the app's current Save To setting, kept in sync automatically. Change Save To in the app *before* sending a link if you want it to land somewhere else; changing it after a link is already queued doesn't move that item.
-- A toast in the app confirms what happened — either "Added N links from the browser extension" or a specific rejection reason (e.g. the page's URL wasn't a supported `http(s)` link).
+- A toast in the app confirms what happened — either "Added N links from the browser extension" or a specific rejection reason (e.g. the page's URL wasn't a supported `http(s)` link). The browser-side notification only confirms the link *left the browser* — there's no channel back from the app to the extension, so it can't confirm the download actually started; the in-app toast and the queue row are the real confirmation.
 - Sending several links one at a time is fine — there's no limit on how many you queue this way. A dedicated "select multiple links on a page and send them all at once" flow doesn't exist yet — see [Roadmap](#roadmap).
+- If an item ends up **Failed** (e.g. a transient network error), click the ⟳ **Retry** button on its row in the queue — no need to re-send the link from the browser.
 
 ### If it's not working
 

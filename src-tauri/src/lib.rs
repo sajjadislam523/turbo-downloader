@@ -1298,6 +1298,7 @@ pub fn run() {
             queue::cancel_all_queue_items,
             queue::pause_queue_item,
             queue::resume_queue_item,
+            queue::retry_queue_item,
             queue::set_max_concurrency,
             queue::set_default_save_path,
             queue::get_queue_snapshot,

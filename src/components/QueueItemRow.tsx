@@ -57,11 +57,12 @@ export default function QueueItemRow({
     item: QueueItem;
     progress: ItemProgress | undefined;
 }) {
-    const { cancelItem, removeItem, pauseItem, resumeItem } = useQueue();
+    const { cancelItem, removeItem, pauseItem, resumeItem, retryItem } = useQueue();
     const p = progress ?? { percent: 0, speed: "--", eta: "--", size: "--", lastLine: "" };
     const isRunning = item.status === "running";
     const isPending = item.status === "pending";
     const isPaused = item.status === "paused";
+    const isFailed = item.status === "failed";
     const isTerminal =
         item.status === "completed" || item.status === "failed" || item.status === "cancelled";
 
@@ -97,6 +98,11 @@ export default function QueueItemRow({
                     {(isRunning || isPending || isPaused) && (
                         <IconButton onClick={() => cancelItem(item.id)} title="Cancel" color="#ff4455" hoverColor="#ff7788">
                             ⏹
+                        </IconButton>
+                    )}
+                    {isFailed && (
+                        <IconButton onClick={() => retryItem(item.id)} title="Retry" color="#c8ff00" hoverColor="#ddff55">
+                            ⟳
                         </IconButton>
                     )}
                     {isTerminal && (

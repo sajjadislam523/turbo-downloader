@@ -432,6 +432,36 @@ pub fn resume_queue_item(app: AppHandle, state: tauri::State<'_, QueueState>, id
     }
 }
 
+// A Failed item already has everything a fresh attempt needs (url, format/
+// resolution, save_path) sitting right there on the item — retrying is just
+// clearing the error and putting it back where enqueue left it (Pending) so
+// the dispatcher picks it up again on its next tick, through the exact same
+// per-host cap/cooldown/disk-space checks as any other pending item. This
+// does not touch yt-dlp's own `--retries`/`--fragment-retries` (RETRY_ARGS,
+// lib.rs) — those cover transient failures *within* one run (a dropped
+// connection mid-fragment); this covers a run that gave up entirely (e.g.
+// the host was unreachable, a transient 5xx, or a cooldown-adjacent race)
+// and previously had no way to be retried except re-pasting the URL.
+#[tauri::command]
+pub fn retry_queue_item(app: AppHandle, state: tauri::State<'_, QueueState>, id: String) -> Result<String, String> {
+    let mut items = lk(&state.inner.items);
+    if let Some(it) = items
+        .iter_mut()
+        .find(|it| it.id == id && it.status == QueueItemStatus::Failed)
+    {
+        it.status = QueueItemStatus::Pending;
+        it.error = None;
+        drop(items);
+        let _ = app.emit(
+            "queue-item-status-changed",
+            serde_json::json!({ "id": id, "status": "pending", "error": Option::<String>::None }),
+        );
+        Ok("Retrying".to_string())
+    } else {
+        Err("No matching failed item to retry".to_string())
+    }
+}
+
 #[tauri::command]
 pub fn cancel_all_queue_items(app: AppHandle, state: tauri::State<'_, QueueState>) -> Result<String, String> {
     let pids: Vec<(String, u32)> = lk(&state.inner.running_pids)
@@ -809,5 +839,34 @@ mod tests {
 
         *lk(&state.inner.default_save_path) = "/mnt/videos".to_string();
         assert_eq!(state.default_save_path(), "/mnt/videos");
+    }
+
+    #[test]
+    fn retrying_a_failed_item_resets_it_to_pending_and_clears_its_error() {
+        let state = QueueState::new();
+        lk(&state.inner.items).push(QueueItem {
+            id: "q1".to_string(),
+            url: "https://example.com/a".to_string(),
+            source: QueueSource::Single,
+            status: QueueItemStatus::Failed,
+            format_id: None,
+            resolution: Some(1080),
+            save_path: "/tmp".to_string(),
+            title: None,
+            error: Some("yt-dlp exited with an error.".to_string()),
+            host: "example.com".to_string(),
+        });
+
+        {
+            let mut items = lk(&state.inner.items);
+            let it = items.iter_mut().find(|it| it.id == "q1").unwrap();
+            it.status = QueueItemStatus::Pending;
+            it.error = None;
+        }
+
+        let items = lk(&state.inner.items);
+        let it = items.iter().find(|it| it.id == "q1").unwrap();
+        assert_eq!(it.status, QueueItemStatus::Pending);
+        assert!(it.error.is_none());
     }
 }

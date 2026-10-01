@@ -6,10 +6,20 @@ See the main project's [README.md § Browser Extension](../README.md#browser-ext
 
 ## Files
 
-- `manifest.json` — Manifest V3 declaration (`contextMenus` + `activeTab` permissions only — no `scripting`, no `host_permissions`).
-- `background.js` — service worker: creates the two context-menu entries and opens `redirect.html` as a new tab with the target URL attached.
+- `manifest.json` — Manifest V3 declaration (`contextMenus` + `activeTab` + `notifications` permissions only — no `scripting`, no `host_permissions`).
+- `background.js` — service worker: creates the two context-menu entries, fires a desktop notification when a link is sent, and opens `redirect.html` as a new tab with the target URL attached — then closes that tab once the handoff has been attempted (see below).
 - `redirect.html` / `redirect.js` — the page that actually triggers the `turbodl://add?url=...` deep link (see below).
 - `popup.html` / `popup.js` — toolbar-button popup with a "Send Current Tab" button, for discoverability without right-clicking; delegates to `background.js`.
+- `icons/` — 16/32/48/128px toolbar and notification icons.
+
+## Feedback and tab cleanup
+
+Sending a link used to leave its helper tab open indefinitely with nothing to look at — the tab had already done its one job (triggering the OS handoff) but nothing ever closed it, and it was the only feedback the extension gave. Two changes fixed this:
+
+- `background.js` fires a `chrome.notifications` desktop notification the moment a link is handed off ("Link sent — check the app's queue"). This confirms the link left the browser, not that the app has actually started downloading it — there's no channel back from the app to the extension to confirm that, so the wording deliberately says "sent," not "downloading."
+- `redirect.js` reports back to `background.js` once it has attempted the `turbodl://` navigation (right after the automatic attempt, or immediately after a manual click on the fallback button), and `background.js` closes that tab in response. A 4-second fallback timer in `background.js` also force-closes the tab regardless, in case that message is never received (e.g. the page failed to load) — a stray tab can't pile up either way.
+
+The tab still opens in the foreground rather than in the background, because the first time a given Chrome profile sees the `turbodl://` scheme, Chrome shows an "Open TurboDL Ultra?" permission prompt tied to that tab, which needs to be visible for you to approve it. Once you've approved it (ideally choosing "Always allow"), later sends hand off silently and the tab closes itself almost immediately without being disruptive.
 
 ## Why a dedicated redirect page
 

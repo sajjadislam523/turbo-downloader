@@ -163,6 +163,7 @@ interface QueueContextValue extends QueueReducerState {
     cancelAll: () => Promise<void>;
     pauseItem: (id: string) => Promise<void>;
     resumeItem: (id: string) => Promise<void>;
+    retryItem: (id: string) => Promise<void>;
     setMaxConcurrency: (value: number) => Promise<number>;
     clearCompleted: () => Promise<void>;
     removeItem: (id: string) => Promise<void>;
@@ -257,6 +258,11 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
         [],
     );
 
+    const retryItem = useCallback(
+        (id: string) => invoke<string>("retry_queue_item", { id }).then(() => undefined),
+        [],
+    );
+
     const setMaxConcurrency = useCallback(async (value: number) => {
         const applied = await invoke<number>("set_max_concurrency", { value });
         dispatch({ type: "maxConcurrency", value: applied });
@@ -282,6 +288,7 @@ export function QueueProvider({ children }: { children: React.ReactNode }) {
         cancelAll,
         pauseItem,
         resumeItem,
+        retryItem,
         setMaxConcurrency,
         clearCompleted,
         removeItem,

@@ -14,9 +14,49 @@
 // click-through fallback link — an actual click on an anchor pointing at an
 // unknown scheme is the most universally-honored way to trigger a browser's
 // external-protocol prompt.
+//
+// The helper tab used to stay open indefinitely (it has nothing left to do
+// once the OS handoff fires, but nothing ever closed it). It now opens in
+// the background (doesn't steal focus from whatever tab you were on) and
+// closes itself once redirect.js reports the handoff was attempted — either
+// right after the automatic attempt, or immediately after a manual
+// click-through. A fallback timer here also force-closes it even if that
+// message never arrives (e.g. the page failed to load), so a stray tab can
+// never pile up.
+const TAB_FALLBACK_CLOSE_MS = 4000;
+
+function notifySent(url) {
+    // This fires the moment the link is handed off to the OS, not once the
+    // app has actually started the download (there's no channel back from
+    // the app to the extension to confirm that) — worded as "sent", not
+    // "downloading", so it stays accurate.
+    chrome.notifications.create({
+        type: "basic",
+        iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+        title: "TurboDL Ultra",
+        message: `Link sent — check the app's queue:\n${url}`,
+        priority: 1,
+    });
+}
+
+function closeTab(tabId) {
+    if (tabId == null) return;
+    chrome.tabs.remove(tabId, () => void chrome.runtime.lastError);
+}
+
 function sendToApp(url) {
+    notifySent(url);
+    // Stays in the foreground (not opened as a background tab): the first
+    // time a browser profile sees the turbodl:// scheme it shows an "Open
+    // TurboDL Ultra?" permission prompt tied to this tab, which needs to be
+    // visible for the user to approve — after that one-time approval,
+    // subsequent sends hand off silently and the tab just closes itself
+    // almost immediately without being disruptive.
     const redirectUrl = chrome.runtime.getURL("redirect.html") + "?url=" + encodeURIComponent(url);
-    chrome.tabs.create({ url: redirectUrl });
+    chrome.tabs.create({ url: redirectUrl }, (tab) => {
+        if (chrome.runtime.lastError || !tab) return;
+        setTimeout(() => closeTab(tab.id), TAB_FALLBACK_CLOSE_MS);
+    });
 }
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -41,9 +81,13 @@ chrome.contextMenus.onClicked.addListener((info) => {
 });
 
 // Lets popup.js delegate the actual send here, so this logic lives in
-// exactly one place.
-chrome.runtime.onMessage.addListener((message) => {
+// exactly one place. redirect.js also reports back here (from the helper tab
+// it runs in) once it has attempted the turbodl:// handoff, so the tab can
+// close itself right away instead of waiting out the fallback timer above.
+chrome.runtime.onMessage.addListener((message, sender) => {
     if (message?.type === "send-to-turbodl" && message.url) {
         sendToApp(message.url);
+    } else if (message?.type === "redirect-done") {
+        closeTab(sender.tab?.id);
     }
 });
